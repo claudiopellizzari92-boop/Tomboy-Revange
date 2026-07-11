@@ -332,6 +332,7 @@ const SFX = {
 /* ---------------- ESTADO ---------------- */
 let mode = 'title', paused = false, last = 0, T = 0;
 let tablaModo = 'story';   // pestaña activa del ranking
+let ctrlSel = 0, ctrlDrag = null;   // config de controles
 let cam = { x:0 }, shake = 0, score = 0;
 let player = null, enemies = [], items = [], sparks = [], popups = [], confetti = [];
 let zones = [], activeZone = null, winT = 0;
@@ -497,10 +498,60 @@ function saveGame(){
   }catch(e){}
 }
 loadSave();
+cargarControles();   // controles personalizados
 if(SB_ON() && SAVE.alias){ sbCargarPerfil(SAVE.alias); }   // sincronizar progreso de la nube al abrir
 let hiscore = SAVE.hiscore;
 const keys = {};
 const pressed = { punch:false, kick:false, jump:false, special:false, throw:false, eat:false, dash:false };
+
+// --- CONFIGURACIÓN DE CONTROLES (editable por el jugador) ---
+const KEYMAP_DEFAULT = {
+  punch:  ['KeyJ','KeyZ'],
+  kick:   ['KeyK','KeyX'],
+  jump:   ['Space'],
+  special:['KeyC','KeyL'],
+  throw:  ['KeyF','KeyB'],
+  eat:    ['KeyQ','KeyE'],
+  dash:   ['KeyV'],
+  block:  ['ShiftLeft','ShiftRight']
+};
+let KEYMAP = JSON.parse(JSON.stringify(KEYMAP_DEFAULT));   // copia editable
+let capturandoTecla = null;   // {acc} mientras espera que el jugador apriete una tecla
+function capturarTecla(code){
+  if(!capturandoTecla) return;
+  const acc = capturandoTecla.acc;
+  // no permitir teclas reservadas de navegación/UI
+  if(['Escape','Tab'].indexOf(code) >= 0){ capturandoTecla = null; return; }
+  KEYMAP[acc] = [code];   // reemplaza por la tecla nueva
+  capturandoTecla = null;
+  guardarControles();
+  SFX.buy && SFX.buy();
+}
+
+// posiciones de los botones táctiles (offset desde el borde, se puede reubicar)
+const BTNPOS_DEFAULT = {
+  a:  { x:-168, y:-66,  r:44 },   // PUÑO
+  b:  { x:-64,  y:-118, r:44 },   // PATADA
+  c:  { x:-262, y:-130, r:36 },   // SALTO
+  bl: { x:-70,  y:-210, r:36 },   // BLOQUEO
+  dv: { x:-150, y:-172, r:32 },   // DASH
+  s:  { x:-158, y:-178, r:32 },   // ESPECIAL
+  t:  { x:-268, y:-42,  r:36 },   // TIRAR
+  q:  { x:-352, y:-72,  r:34 }    // COMER
+};
+let BTNPOS = JSON.parse(JSON.stringify(BTNPOS_DEFAULT));
+
+// nombres legibles de cada acción
+const ACCIONES = [
+  ['punch','PUÑO'], ['kick','PATADA'], ['jump','SALTO'], ['special','ESPECIAL'],
+  ['throw','TIRAR'], ['eat','QUESILLO'], ['dash','ESQUIVE'], ['block','BLOQUEO']
+];
+function nombreTecla(code){
+  if(!code) return '—';
+  return code.replace('Key','').replace('Digit','').replace('Arrow','←↑→↓ ')
+    .replace('ShiftLeft','SHIFT').replace('ShiftRight','SHIFT-D')
+    .replace('Space','ESPACIO').replace('ControlLeft','CTRL').replace('Keyz','Z');
+}
 
 const CHARS = [
   { key:'flo',   nom:'FLORENTINO', skin:'base', big:1.00, hp:120, vel:3.3, dmg:1.00, alcance:1.00,
@@ -851,6 +902,24 @@ function drawAustinPC(){
   g.fillStyle = gl; g.fillRect(mx - 64, my - 60, 128, 128);
   g.restore();
 }
+function guardarControles(){
+  try{ localStorage.setItem('tomboyControles', JSON.stringify({ KEYMAP, BTNPOS })); }catch(e){}
+}
+function cargarControles(){
+  try{
+    const raw = localStorage.getItem('tomboyControles');
+    if(raw){
+      const d = JSON.parse(raw);
+      if(d.KEYMAP) for(const k in KEYMAP) if(d.KEYMAP[k]) KEYMAP[k] = d.KEYMAP[k];
+      if(d.BTNPOS) for(const k in BTNPOS) if(d.BTNPOS[k]) BTNPOS[k] = d.BTNPOS[k];
+    }
+  }catch(e){}
+}
+function resetControles(){
+  KEYMAP = JSON.parse(JSON.stringify(KEYMAP_DEFAULT));
+  BTNPOS = JSON.parse(JSON.stringify(BTNPOS_DEFAULT));
+  guardarControles();
+}
 function pedirAlias(){
   if(SAVE.alias || !SB_ON()) return;   // ya tiene, o el ranking global no está activo
   let n = '';
@@ -916,14 +985,14 @@ addEventListener('keydown', e => {
   audioInit();
   if(e.code === 'KeyP' && mode !== 'play'){ pruebaFinal(); return; }
   if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].indexOf(e.code) >= 0) e.preventDefault();
+  // si estamos capturando una tecla para reasignar, no procesar como acción
+  if(capturandoTecla){ capturarTecla(e.code); e.preventDefault(); return; }
   if(!e.repeat){
-    if(e.code === 'KeyJ' || e.code === 'KeyZ') pressed.punch = true;
-    if(e.code === 'KeyK' || e.code === 'KeyX') pressed.kick = true;
-    if(e.code === 'Space') pressed.jump = true;
-    if(e.code === 'KeyC' || e.code === 'KeyL') pressed.special = true;
-    if(e.code === 'KeyF' || e.code === 'KeyB') pressed.throw = true;
-    if(e.code === 'KeyQ' || e.code === 'KeyE') pressed.eat = true;
-    if(e.code === 'KeyV') pressed.dash = true;
+    // usar el mapeo configurable
+    for(const acc in KEYMAP){
+      if(acc === 'block') continue;   // block se maneja con 'keys' (mantener)
+      if(KEYMAP[acc].indexOf(e.code) >= 0 && pressed[acc] !== undefined) pressed[acc] = true;
+    }
     if(e.code === 'Enter' || e.code === 'Space') { if(mode !== 'play') { uiConfirm(); } }
     if(mode !== 'play'){
       if(e.code === 'ArrowUp' || e.code === 'KeyW') uiMove(-1);
@@ -936,7 +1005,9 @@ addEventListener('keydown', e => {
         if(e.code === 'ArrowRight' || e.code === 'KeyD') uiMove(1);
       }
       if(e.code === 'Escape'){
-        if(mode === 'shop' && shopModal >= 0){ shopModal = -1; SFX.punch(); }
+        if(capturandoTecla){ capturandoTecla = null; }
+        else if(mode === 'controles'){ mode = 'title'; menuSel = 0; guardarControles(); }
+        else if(mode === 'shop' && shopModal >= 0){ shopModal = -1; SFX.punch(); }
         else if(mode === 'shop' || mode === 'tabla' || mode === 'select'){ mode = 'title'; menuSel = 0; }
       }
     }
@@ -953,21 +1024,29 @@ function toCanvas(e){
   const r = cv.getBoundingClientRect();
   return { x:(e.clientX - r.left) / r.width * W, y:(e.clientY - r.top) / r.height * H };
 }
+const BTN_META = {
+  a:  { label:'PUÑO',   col:'#c1272d' },
+  b:  { label:'PATADA', col:'#2458c5' },
+  c:  { label:'SALTO',  col:'#2e8b3a' },
+  bl: { label:'🛡',     col:'#3a7bbf' },
+  dv: { label:'DASH',   col:'#5a9bd6' },
+  s:  { label:'★',      col:'#ffd24a' },
+  t:  { label:'TIRAR',  col:'#8a4bd6' },
+  q:  { label:'COMER',  col:'#3e7a34' }
+};
+function btnXY(id){
+  const p = BTNPOS[id] || BTNPOS_DEFAULT[id];
+  return { x: W + p.x, y: H + p.y, r: p.r };   // offset negativo desde el borde
+}
 function buttons(){
-  const b = [
-    { id:'a', label:'PUÑO',   x:W-168, y:H-66,  r:44, col:'#c1272d' },
-    { id:'b', label:'PATADA', x:W-64,  y:H-118, r:44, col:'#2458c5' },
-    { id:'c', label:'SALTO',  x:W-262, y:H-130, r:36, col:'#2e8b3a' },
-    { id:'bl',label:'🛡',     x:W-70,  y:H-210, r:36, col:'#3a7bbf' },
-    { id:'dv',label:'DASH',   x:W-150, y:H-172, r:32, col:'#5a9bd6' }
-  ];
-  if(player && player.meter >= 100 && mode === 'play')
-    b.push({ id:'s', label:'★', x:W-158, y:H-178, r:32, col:'#ffd24a' });
-  if(player && player.arma && mode === 'play')
-    b.push({ id:'t', label:'TIRAR', x:W-268, y:H-42, r:36, col:'#8a4bd6' });
-  if(quesillos > 0 && mode === 'play')
-    b.push({ id:'q', label:'COMER', x:W-352, y:H-72, r:34, col:'#3e7a34' });
-  return b;
+  const mostrar = ['a','b','c','bl','dv'];
+  if(player && player.meter >= 100 && mode === 'play') mostrar.push('s');
+  if(player && player.arma && mode === 'play') mostrar.push('t');
+  if(quesillos > 0 && mode === 'play') mostrar.push('q');
+  return mostrar.map(id => {
+    const xy = btnXY(id), m = BTN_META[id];
+    return { id, label:m.label, x:xy.x, y:xy.y, r:xy.r, col:m.col };
+  });
 }
 function hitButton(x, y){
   const bs = buttons();
@@ -990,6 +1069,18 @@ function btnPress(id){
 cv.addEventListener('pointerdown', e => {
   audioInit();
   const p = toCanvas(e);
+  if(mode === 'controles' && isTouch){
+    // ¿tocó un botón para arrastrarlo?
+    for(const id of ['a','b','c','bl','dv','s','t','q']){
+      const xy = btnXY(id);
+      if((p.x-xy.x)**2 + (p.y-xy.y)**2 <= (xy.r+8)**2){
+        ctrlDrag = { id, offx: p.x - xy.x, offy: p.y - xy.y };
+        pointers[e.pointerId] = { type:'ctrldrag' };
+        return;
+      }
+    }
+    menuTouch(p); return;   // si no, ver si tocó un botón de acción
+  }
   if(mode !== 'play'){ menuTouch(p); return; }
   const b = hitButton(p.x, p.y);
   if(b){ pointers[e.pointerId] = { type:'btn', id:b }; touch.btn[b] = true; btnPress(b); }
@@ -999,6 +1090,15 @@ cv.addEventListener('pointerdown', e => {
 });
 cv.addEventListener('pointermove', e => {
   const pt = pointers[e.pointerId];
+  if(pt && pt.type === 'ctrldrag' && ctrlDrag){
+    const p = toCanvas(e);
+    // guardar como offset negativo desde el borde, con límites en pantalla
+    const nx = Math.max(30, Math.min(W - 30, p.x - ctrlDrag.offx));
+    const ny = Math.max(30, Math.min(H - 30, p.y - ctrlDrag.offy));
+    BTNPOS[ctrlDrag.id].x = nx - W;
+    BTNPOS[ctrlDrag.id].y = ny - H;
+    return;
+  }
   if(pt && pt.type === 'stick' && touch.stick){
     const p = toCanvas(e);
     let dx = p.x - touch.stick.ox, dy = p.y - touch.stick.oy;
@@ -1010,7 +1110,9 @@ cv.addEventListener('pointermove', e => {
 function pointerEnd(e){
   const pt = pointers[e.pointerId];
   if(pt){
-    if(pt.type === 'stick') touch.stick = null; else touch.btn[pt.id] = false;
+    if(pt.type === 'ctrldrag'){ ctrlDrag = null; guardarControles(); }
+    else if(pt.type === 'stick') touch.stick = null;
+    else if(pt.id) touch.btn[pt.id] = false;
     delete pointers[e.pointerId];
   }
 }
@@ -1026,6 +1128,7 @@ function uiConfirm(){
   if(!SPR.ready || !BG.ready || !QUES.ready || !PIZZA.ready) return;
   if(mode === 'title'){
     if(menuSel === 99){ pruebaFinal(); return; }
+    if(menuSel === 98){ mode = 'controles'; menuSel = 0; ctrlSel = 0; capturandoTecla = null; SFX.go(); return; }
     if(menuSel === 0){ pedirAlias(); gameMode = 'story'; reset(); mode = 'play'; paused = false; SFX.go(); return; }
     if(menuSel === 1){
       if(!SAVE.hordeUnlocked){ negado = 900; SFX.comboBreak(); shake = 90; return; }
@@ -1045,6 +1148,21 @@ function uiConfirm(){
     shopModal = menuSel; shopBtn = 0; shopAnim = 0; SFX.go();
     return;
   }
+  if(mode === 'controles'){
+    // por teclado (Enter): capturar la acción seleccionada con las flechas
+    if(!isTouch && (menuSel === 0 || menuSel === undefined) && !capturandoTecla){
+      capturandoTecla = { acc: ACCIONES[ctrlSel][0] }; SFX.go(); return;
+    }
+    // por clic: menuSel viene con el i del botón tocado
+    if(menuSel >= 300 && menuSel < 300 + ACCIONES.length){
+      ctrlSel = menuSel - 300;
+      if(!isTouch){ capturandoTecla = { acc: ACCIONES[ctrlSel][0] }; SFX.go(); }
+      return;
+    }
+    if(menuSel === 310){ resetControles(); SFX.buy && SFX.buy(); return; }        // restaurar
+    if(menuSel === 311){ mode = 'title'; menuSel = 0; guardarControles(); SFX.go(); return; }  // listo
+    return;
+  }
   if(mode === 'tabla'){
     if(menuSel === 200){ tablaModo = 'story'; if(SB_ON()) sbTraerTop('story'); SFX.punch(); return; }
     if(menuSel === 201){ tablaModo = 'horde'; if(SB_ON()) sbTraerTop('horde'); SFX.punch(); return; }
@@ -1054,6 +1172,7 @@ function uiConfirm(){
   if(mode === 'over' || mode === 'win'){ mode = 'title'; menuSel = 0; SFX.go(); return; }
 }
 function uiMove(d){
+  if(mode === 'controles'){ if(!isTouch) ctrlSel = (ctrlSel + d + ACCIONES.length) % ACCIONES.length; return; }
   if(mode === 'title') menuSel = (menuSel + d + 4) % 4;
   else if(mode === 'select') menuSel = (menuSel + d + CHARS.length) % CHARS.length;
   else if(mode === 'shop'){
@@ -1509,7 +1628,7 @@ function updatePlayer(dt){
   }
 
   // ---- BLOQUEO (mantener Shift): reduce daño; el inicio es ventana de PARRY ----
-  const quiereBloquear = (keys.ShiftLeft || keys.ShiftRight || touch.btn.bl) && p.blockCD <= 0;
+  const quiereBloquear = (KEYMAP.block.some(k => keys[k]) || touch.btn.bl) && p.blockCD <= 0;
   const puedeBloquear = ['idle','walk','block'].indexOf(p.state) >= 0 && p.z === 0;
   if(quiereBloquear && puedeBloquear){
     if(p.state !== 'block'){
@@ -2891,6 +3010,14 @@ function drawTitle(){
   g.fillRect(pbx, pby, pbw, pbh);
   g.strokeStyle = '#a04050'; g.lineWidth = 1.5; g.strokeRect(pbx, pby, pbw, pbh);
   textC('⚔ PROBAR JEFES' + (isTouch ? '' : '  (P)'), pbx + pbw/2, pby + pbh/2 + 4, 12, '#ff9aa8');
+  // botón CONTROLES (abajo a la izquierda)
+  const cbw = 150, cbh = 30, cbx = 16, cby = H - cbh - 14;
+  menuBoxes.push({ i:98, x:cbx, y:cby, w:cbw, h:cbh });   // i=98 → controles
+  const onC = menuSel === 98;
+  g.fillStyle = onC ? 'rgba(40,60,120,0.9)' : 'rgba(20,24,40,0.8)';
+  g.fillRect(cbx, cby, cbw, cbh);
+  g.strokeStyle = '#4a6bbf'; g.lineWidth = 1.5; g.strokeRect(cbx, cby, cbw, cbh);
+  textC('⚙ CONTROLES', cbx + cbw/2, cby + cbh/2 + 4, 12, '#9fb8ff');
 }
 
 function drawSelect(){
@@ -3187,6 +3314,67 @@ function drawShopModal(){
   textC(isTouch ? 'tocá COMPRAR o VOLVER' : '←→ elegir · ENTER confirmar · ESC cancelar', W/2, H - 14, 12, '#8f93b8');
 }
 
+function drawControles(){
+  drawBG(0);
+  g.fillStyle = 'rgba(5,4,12,0.92)'; g.fillRect(0, 0, W, H);
+  menuBoxes = [];
+  textC('⚙ CONTROLES', W/2, 46, 30, '#9fb8ff');
+
+  if(isTouch){
+    // ---- MÓVIL: arrastrar los botones ----
+    textC('arrastrá cada botón a donde quieras', W/2, 74, 13, '#cfd4ff');
+    // dibujar los botones en sus posiciones actuales, arrastrables
+    for(const id of ['a','b','c','bl','dv','s','t','q']){
+      const xy = btnXY(id), m = BTN_META[id];
+      g.globalAlpha = 0.9;
+      g.beginPath(); g.arc(xy.x, xy.y, xy.r, 0, Math.PI*2);
+      g.fillStyle = m.col; g.fill();
+      g.strokeStyle = '#fff'; g.lineWidth = 2; g.stroke();
+      g.globalAlpha = 1;
+      textC(m.label, xy.x, xy.y + 4, m.label.length > 2 ? 11 : 16, '#fff');
+    }
+    // botones de acción abajo
+    const by = H - 44;
+    g.fillStyle = 'rgba(40,60,120,0.85)'; g.fillRect(W/2 - 200, by, 180, 34);
+    g.strokeStyle = '#4a6bbf'; g.strokeRect(W/2 - 200, by, 180, 34);
+    textC('↺ RESTAURAR', W/2 - 110, by + 22, 14, '#9fb8ff');
+    menuBoxes.push({ i:310, x:W/2 - 200, y:by, w:180, h:34 });
+    g.fillStyle = 'rgba(40,120,60,0.85)'; g.fillRect(W/2 + 20, by, 180, 34);
+    g.strokeStyle = '#4abf6b'; g.strokeRect(W/2 + 20, by, 180, 34);
+    textC('✓ LISTO', W/2 + 110, by + 22, 14, '#9fffb8');
+    menuBoxes.push({ i:311, x:W/2 + 20, y:by, w:180, h:34 });
+  } else {
+    // ---- PC: reasignar teclas ----
+    textC('clic en una acción y apretá la tecla nueva', W/2, 74, 13, '#cfd4ff');
+    const bx = W/2 - 180, y0 = 108;
+    for(let i = 0; i < ACCIONES.length; i++){
+      const [acc, nom] = ACCIONES[i];
+      const y = y0 + i*38;
+      const sel = ctrlSel === i;
+      const capturando = capturandoTecla && capturandoTecla.acc === acc;
+      g.fillStyle = capturando ? 'rgba(120,90,40,0.9)' : (sel ? 'rgba(40,50,90,0.85)' : 'rgba(20,20,32,0.7)');
+      g.fillRect(bx, y - 20, 360, 32);
+      g.strokeStyle = capturando ? '#ffd24a' : (sel ? '#6a8bdf' : '#3a3550'); g.lineWidth = 1.5;
+      g.strokeRect(bx, y - 20, 360, 32);
+      textC(nom, bx + 16, y, 15, '#cfd4ff', 'left');
+      const teclas = KEYMAP[acc].map(nombreTecla).join(' / ');
+      textC(capturando ? '¿ apretá una tecla ?' : teclas, bx + 344, y, 14,
+            capturando ? '#ffd24a' : '#9fffb8', 'right');
+      menuBoxes.push({ i:300 + i, x:bx, y:y - 20, w:360, h:32 });
+    }
+    // restaurar y listo
+    const by = H - 52;
+    g.fillStyle = 'rgba(40,60,120,0.85)'; g.fillRect(W/2 - 200, by, 180, 34);
+    g.strokeStyle = '#4a6bbf'; g.strokeRect(W/2 - 200, by, 180, 34);
+    textC('↺ RESTAURAR', W/2 - 110, by + 22, 14, '#9fb8ff');
+    menuBoxes.push({ i:310, x:W/2 - 200, y:by, w:180, h:34 });
+    g.fillStyle = 'rgba(40,120,60,0.85)'; g.fillRect(W/2 + 20, by, 180, 34);
+    g.strokeStyle = '#4abf6b'; g.strokeRect(W/2 + 20, by, 180, 34);
+    textC('✓ LISTO', W/2 + 110, by + 22, 14, '#9fffb8');
+    menuBoxes.push({ i:311, x:W/2 + 20, y:by, w:180, h:34 });
+  }
+  textC(isTouch ? '' : 'ESC para volver', W/2, H - 12, 12, '#8f93b8');
+}
 function drawTabla(){
   drawBG(0);
   g.fillStyle = 'rgba(5,4,12,0.90)'; g.fillRect(0, 0, W, H);
@@ -3302,6 +3490,7 @@ function render(){
   if(mode === 'select'){ T += 16; drawSelect(); return; }
   if(mode === 'shop'){ T += 16; drawShop(); return; }
   if(mode === 'tabla'){ T += 16; drawTabla(); return; }
+  if(mode === 'controles'){ T += 16; drawControles(); return; }
 
   const amp = Math.min(14, shake/16);
   const shx = shake > 0 ? (Math.random()*2 - 1)*amp : 0;
