@@ -356,6 +356,7 @@ let impacts = [];       // ¡POW! ¡ZAS! ¡BOOM!
 let combo = 0, comboT = 0, comboBest = 0, comboPulse = 0;
 let flashScreen = 0;
 let bossAnnounce = 0, bossAnnounceTxt = '', bossSub = '';
+let vsIntro = null;   // presentación épica de jefe (pantalla VS + entrada)
 let zoom = 1, zoomTarget = 1;         // golpe de cámara
 let debris = [];                       // chispas y esquirlas
 let rank = '', rankT = 0, rankPulse = 0;
@@ -370,6 +371,12 @@ const TRIP_DUR = 9000;
 let tripHue = 0;
 let jefeIdx = 0;         // cuál de los tres jefes finales toca
 let sufri = null;        // Sufrilina, la repartidora (no pelea)
+let atacantesActivos = 0;   // cuántos enemigos están atacando de cerca (máx 2)
+let lanzadoresActivos = 0;  // cuántos están tirando proyectiles (máx 1)
+const MAX_ATACANTES = 2;    // sistema de tickets: solo 2 pegan a la vez
+const MAX_LANZADORES = 1;   // y solo 1 lanza proyectiles a la vez
+const DERRIBO_PROB = 0.35;  // probabilidad de que un golpe fuerte derribe al jugador (35%)
+let sufriUsada = false;  // ya apareció en esta ronda
 let sufriCD = 0;
 let quesillos = 0;       // los guardás y los comés cuando vos querés
 const QUES_MAX = 3;
@@ -537,7 +544,8 @@ const BTNPOS_DEFAULT = {
   dv: { x:-150, y:-172, r:32 },   // DASH
   s:  { x:-158, y:-178, r:32 },   // ESPECIAL
   t:  { x:-268, y:-42,  r:36 },   // TIRAR
-  q:  { x:-352, y:-72,  r:34 }    // COMER
+  q:  { x:-352, y:-72,  r:34 },   // COMER
+  slot:{ x:-480, y:-90, r:46 }    // TRAGAMONEDAS (grande y centrado)
 };
 let BTNPOS = JSON.parse(JSON.stringify(BTNPOS_DEFAULT));
 
@@ -582,10 +590,10 @@ function reset(){
   enemies = []; items = []; sparks = []; popups = []; confetti = [];
   activeZone = null;
   hitstop = 0; slowmo = 0; impacts = []; combo = 0; comboT = 0; comboBest = 0;
-  flashScreen = 0; runCoins = 0; wave = 0; bossAnnounce = 0;
+  flashScreen = 0; runCoins = 0; wave = 0; bossAnnounce = 0; vsIntro = null;
   zoom = 1; zoomTarget = 1; debris = []; rank = ''; rankT = 0; rankPulse = 0;
   projs = [];
-  trip = 0; tripHue = 0; sufri = null; sufriCD = 14000; quesillos = 0;
+  trip = 0; tripHue = 0; sufri = null; sufriUsada = false; sufriCD = 14000; quesillos = 0; atacantesActivos = 0; lanzadoresActivos = 0;
   vignette = 0; noDamageWave = true; speedLines = 0; killStreak = 0;
   const C = CHARS[charSel];
   const maxhp = C.hp + UPG.vida * 20;
@@ -623,7 +631,7 @@ function spawnJefePorId(id, side){
   e.team = 1;
   e.x = cam.x + (side > 0 ? W + 60 : -60);
   e.y = GROUND_TOP + 30 + Math.random() * (GROUND_BOT - GROUND_TOP - 60);
-  e.cool = 700; e.yJit = 0; e.jitT = 0;
+  e.cool = 700; e.yJit = 0; e.jitT = 0; e.throwCD = 800;
   enemies.push(e); activeZone.enemies.push(e);
   return e;
 }
@@ -721,26 +729,54 @@ function updateFinal(dt){
       if(F.tanda >= TANDAS.length){
         F.fase = 'pop'; F.t = 0;
         const J = JEFES.find(j => j.id === 'pop');
+        lanzarVS('pop');
         bossAnnounce = 2600; bossAnnounceTxt = J.nom; bossSub = J.grito;
-        F.pop = spawnJefePorId('pop', -1);   // entra por la izquierda (lado jugable, no detrás del firewall)
+        F.pop = spawnJefePorId('pop', -1);   // Popporoni entra al campo de batalla
+        // Faw aparece DETRÁS DEL FIREWALL, solo lanzando bolas hasta que caiga Popporoni
+        F.faw = spawnJefePorId('faw', 1);
+        F.faw.x = F.pcX - 40;                 // en la zona protegida del PC
+        F.faw.tirador = true;                 // modo "solo lanza, no avanza"
+        F.faw.invulnDetrasFw = true;          // intocable mientras esté detrás
       } else { F.spawned = false; F.t = -700; }   // pausa entre tandas
     }
   }
   else if(F.fase === 'pop'){
-    const mitad = F.pop.hp <= F.pop.maxhp / 2 || F.pop.dead;
-    if(mitad && !F.fawIn){
-      F.fawIn = true;
-      const J = JEFES.find(j => j.id === 'faw');
-      bossAnnounce = 2600; bossAnnounceTxt = J.nom; bossSub = J.grito;
-      F.faw = spawnJefePorId('faw', -1);   // entra por el lado contrario
-      slowmo = 400; zoomTarget = 1.1;
+    // Faw hostiga con bolas desde atrás del firewall; se intensifica cuando Popporoni está por caer
+    if(F.faw && !F.faw.dead && F.faw.tirador){
+      const fracPop = F.pop ? Math.max(0, F.pop.hp / F.pop.maxhp) : 0;
+      // cadencia: tranquila al principio, frenética cuando Popporoni agoniza
+      F.faw.throwBase = 2200 - (1 - fracPop) * 1400;   // de 2200ms a ~800ms
+      if(fracPop < 0.3 && !F.fawFurioso){
+        F.fawFurioso = true;
+        bossAnnounce = 1600; bossAnnounceTxt = '¡FAW SE DESESPERA!'; bossSub = 'las bolas llueven';
+        flashScreen = 120; shake = Math.max(shake, 160);
+      }
     }
-    if(F.fawIn && !vivos.length){ F.fase = 'levanta'; F.t = 0; shake = Math.max(shake, 240); }
+    // cuando cae Popporoni: Austincito MATERIALIZA a Faw DELANTE del firewall (que sigue en pie)
+    if(F.pop && F.pop.dead && F.faw && F.faw.tirador){
+      F.faw.tirador = false;
+      F.faw.invulnDetrasFw = false;
+      // Austincito lo "compila" delante de su firewall, del lado jugable
+      F.faw.x = F.barrera - 90;
+      F.faw.materializando = 700;   // efecto de aparición
+      const J = JEFES.find(j => j.id === 'faw');
+      lanzarVS('faw');
+      bossAnnounce = 2800; bossAnnounceTxt = J.nom; bossSub = 'AUSTINCITO LO COMPILÓ';
+      slowmo = 500; zoomTarget = 1.14; flashScreen = 160; shake = Math.max(shake, 280);
+      burst(F.faw.x, F.faw.y - 40, 30, '#5ee7ff', 3.6);
+      F.fawIn = true;
+    }
+    // cuando cae FAW: recién ahí cae el firewall y entra Austincito
+    if(F.fawIn && !vivos.length){
+      F.firewallCaido = true;   // el firewall se desactiva al caer Faw
+      F.fase = 'levanta'; F.t = 0; shake = Math.max(shake, 240);
+    }
   }
   else if(F.fase === 'levanta'){
     // Austincito cierra la laptop y se levanta: pantalla en ERROR, aura creciente
     if(F.t > 1800){
       const J = JEFES.find(j => j.id === 'austin');
+      lanzarVS('austin');
       bossAnnounce = 3000; bossAnnounceTxt = J.nom; bossSub = J.grito;
       slowmo = 500; zoomTarget = 1.12; flashScreen = 120; shake = Math.max(shake, 260);
       // nace como enemigo jugable saliendo de la PC
@@ -826,11 +862,121 @@ function poderesAustin(e, dt){
     SFX.special(); e.powCD = 8000 + Math.random()*2000;
   }
 }
+// ============ PRESENTACIÓN ÉPICA DE JEFES (VS + entrada) ============
+const VS_SENSEI = { id:'sensei', nom:'EL SENSEI', rig:'boss', big:1.28, grito:'EL MAESTRO DEL DOJO' };
+function lanzarVS(jefeId){
+  const J = jefeId === 'sensei' ? VS_SENSEI : JEFES.find(j => j.id === jefeId);
+  if(!J) return;
+  // "maniquí" del jefe para dibujar su sprite en el retrato
+  const maniqui = makeApe({ rigKey:J.rig, skin:'base', big:J.big, name:J.nom });
+  maniqui.state = 'idle';
+  vsIntro = {
+    jefe: J, maniqui, t: 0, fase: 'entra',
+    dur: { entra: 500, muestra: 1700, sale: 400 }
+  };
+  slowmo = Math.max(slowmo, 300);
+  SFX.rango ? SFX.rango(2) : SFX.special();
+}
+function updateVS(dt){
+  if(!vsIntro) return;
+  const v = vsIntro;
+  v.t += dt;
+  if(v.fase === 'entra' && v.t > v.dur.entra){ v.fase = 'muestra'; v.t = 0;
+    flashScreen = 180; shake = Math.max(shake, 220); vibrar(120);
+    SFX.ko ? SFX.ko() : SFX.kick();
+  }
+  else if(v.fase === 'muestra' && v.t > v.dur.muestra){ v.fase = 'sale'; v.t = 0; }
+  else if(v.fase === 'sale' && v.t > v.dur.sale){ vsIntro = null; }
+}
+function drawVS(){
+  if(!vsIntro) return;
+  const v = vsIntro, J = v.jefe;
+  // progreso de apertura/cierre del letterbox
+  let open = 1;
+  if(v.fase === 'entra') open = Math.min(1, v.t / v.dur.entra);
+  else if(v.fase === 'sale') open = Math.max(0, 1 - v.t / v.dur.sale);
+
+  // fondo oscuro dramático
+  g.fillStyle = `rgba(5,4,12,${(0.82*open).toFixed(2)})`;
+  g.fillRect(0, 0, W, H);
+
+  // barras cinematográficas (letterbox) que entran desde arriba y abajo
+  const barH = 70 * open;
+  g.fillStyle = '#000';
+  g.fillRect(0, 0, W, barH);
+  g.fillRect(0, H - barH, W, barH);
+  // líneas de acento en los bordes del letterbox
+  g.fillStyle = J.id === 'austin' ? '#5ee7ff' : '#ff5030';
+  g.fillRect(0, barH - 3, W, 3);
+  g.fillRect(0, H - barH, W, 3);
+
+  if(open < 0.4) return;   // esperar a que abra para dibujar el contenido
+
+  // rayos radiales detrás del jefe
+  const cxR = W * 0.68, cyR = H * 0.52;
+  g.save();
+  g.globalAlpha = 0.5 * open;
+  for(let i = 0; i < 12; i++){
+    const a = i * (Math.PI/6) + T/600;
+    g.fillStyle = i % 2 ? (J.id === 'austin' ? '#1a4a5a' : '#4a1a20') : 'transparent';
+    g.beginPath(); g.moveTo(cxR, cyR);
+    g.arc(cxR, cyR, 400, a, a + Math.PI/6); g.closePath(); g.fill();
+  }
+  g.restore();
+
+  // RETRATO del jefe: su sprite grande, deslizándose desde la derecha
+  const slideX = v.fase === 'entra' ? (1 - open) * 300 : 0;
+  const escala = 4.2 * J.big;
+  v.maniqui.y = cyR + 120;
+  v.maniqui.face = -1;
+  v.maniqui.big = escala;   // sprite grande para el retrato
+  v.maniqui.state = 'idle';
+  v.maniqui.flash = (v.fase === 'muestra' && v.t < 120) ? 90 : 0;   // destello al aparecer
+  // neutralizar cam.x para posicionar el sprite en coordenadas de PANTALLA directas
+  const camPrev = cam.x;
+  cam.x = 0;
+  v.maniqui.x = cxR + slideX;   // ahora x = posición real en pantalla
+  try { drawApe(v.maniqui); } catch(err) {}
+  cam.x = camPrev;   // restaurar la cámara
+  v.maniqui.big = J.big;
+
+  // NOMBRE del jefe con efecto slam
+  let slamSc = 1;
+  if(v.fase === 'muestra' && v.t < 200) slamSc = 1 + (1 - v.t/200) * 1.5;   // golpe de escala
+  g.save();
+  g.translate(W * 0.30, H * 0.42);
+  g.scale(slamSc, slamSc);
+  g.textAlign = 'center';
+  // sombra del texto
+  g.fillStyle = '#000'; g.font = '900 40px "Arial Black",sans-serif';
+  g.fillText(J.nom, 3, 3);
+  g.fillStyle = J.id === 'austin' ? '#5ee7ff' : '#ff5030';
+  g.fillText(J.nom, 0, 0);
+  g.restore();
+
+  // título/grito del jefe
+  g.save();
+  g.globalAlpha = v.fase === 'muestra' ? Math.min(1, v.t/300) : open;
+  textC('« ' + J.grito + ' »', W * 0.30, H * 0.52, 18, '#ffd24a');
+  g.restore();
+
+  // "¡PREPARÁTE!" parpadeante
+  if(v.fase === 'muestra' && Math.floor(T/250) % 2){
+    textC('¡PREPARÁTE!', W * 0.30, H * 0.66, 22, '#fff');
+  }
+
+  // línea "VS" decorativa
+  g.save();
+  g.globalAlpha = open;
+  g.strokeStyle = '#fff'; g.lineWidth = 2;
+  textC('VS', W * 0.30, H * 0.30, 26, J.id === 'austin' ? '#5ee7ff' : '#ff5030');
+  g.restore();
+}
 function drawAustinPC(){
   const F = finBat; if(!F) return;
   if(F.fase === 'pelea' || F.fase === 'fin') return;   // ya se levantó
   // ---- FIREWALL: pared de energía que bloquea el paso a la zona del PC ----
-  if(F.barrera){
+  if(F.barrera && !F.firewallCaido){
     const bx = F.barrera - cam.x;
     g.save();
     g.globalCompositeOperation = 'lighter';
@@ -970,6 +1116,8 @@ function spawnEnemy(type, side){
     e.speed *= 1.5; e.dmg = Math.max(1, Math.round(e.dmg*0.5));
     e.huyeT = 7000;   // aguanta 7s antes de escapar
   }
+  // presentación épica del SENSEI (jefe intermedio)
+  if(type === 'b' && gameMode !== 'horde') lanzarVS('sensei');
   enemies.push(e); activeZone.enemies.push(e);
 }
 function spawnHorde(type, side){
@@ -1018,7 +1166,7 @@ addEventListener('keydown', e => {
 addEventListener('keyup', e => { keys[e.code] = false; });
 
 const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
-const touch = { stick:null, btn:{ a:false, b:false, c:false, s:false, t:false, q:false, bl:false, dv:false } };
+const touch = { stick:null, btn:{ a:false, b:false, c:false, s:false, t:false, q:false, bl:false, dv:false, slot:false } };
 const pointers = {};
 function toCanvas(e){
   const r = cv.getBoundingClientRect();
@@ -1032,7 +1180,8 @@ const BTN_META = {
   dv: { label:'DASH',   col:'#5a9bd6' },
   s:  { label:'★',      col:'#ffd24a' },
   t:  { label:'TIRAR',  col:'#8a4bd6' },
-  q:  { label:'COMER',  col:'#3e7a34' }
+  q:  { label:'COMER',  col:'#3e7a34' },
+  slot:{ label:'🎰',    col:'#c9a44a' }
 };
 function btnXY(id){
   const p = BTNPOS[id] || BTNPOS_DEFAULT[id];
@@ -1040,6 +1189,7 @@ function btnXY(id){
 }
 function buttons(){
   const mostrar = ['a','b','c','bl','dv'];
+  if(ruleta && ruleta.fase === 'lista' && player && Math.abs(player.x - ruleta.x) < 90 && mode === 'play') mostrar.push('slot');
   if(player && player.meter >= 100 && mode === 'play') mostrar.push('s');
   if(player && player.arma && mode === 'play') mostrar.push('t');
   if(quesillos > 0 && mode === 'play') mostrar.push('q');
@@ -1064,6 +1214,7 @@ function btnPress(id){
   if(id === 't') pressed.throw = true;
   if(id === 'q') pressed.eat = true;
   if(id === 'dv') pressed.dash = true;
+  if(id === 'slot'){ activarRuleta(); }
   // 'bl' (bloqueo) se maneja como mantenido: ver touchBlock
 }
 cv.addEventListener('pointerdown', e => {
@@ -1215,6 +1366,11 @@ function p_parry(attacker, dir){
 }
 function hitEntity(t, dmg, dir, kd, attacker){
   if(t.state === 'down' || t.state === 'getup' || t.state === 'ko' || t.state === 'spin') return false;
+  // Faw es intocable mientras hostiga detrás del firewall
+  if(t.invulnDetrasFw){
+    if(attacker === player){ popups.push({ x:t.x, y:t.y - 90, txt:'protegido', t:0, col:'#5ee7ff', size:12, vx:0, vy:-0.05 }); }
+    return false;
+  }
 
   // ---- DEFENSA DEL JUGADOR: iframes / parry / bloqueo ----
   if(t === player){
@@ -1357,14 +1513,18 @@ function hitEntity(t, dmg, dir, kd, attacker){
         }
       }
     }
-  } else if(kd){
+  } else if(kd && (t !== player || Math.random() < DERRIBO_PROB)){
+    // el jugador solo cae por probabilidad; los enemigos siempre caen (es satisfactorio)
     t.state = 'down'; t.st = 0; t.landed = false;
     t.vz = 4.9; t.z = Math.max(t.z, 1); t.vx = dir*2.9; t.face = -dir;
     SFX.down();
+  } else if(kd && t === player){
+    // el golpe pegaba fuerte pero NO te tira: solo retrocedés (te salvaste)
+    t.state = 'hurt'; t.st = 0; t.x += dir*8; SFX.hit();
   } else if(t.hp <= t.maxhp*0.18 && !t.esJefe && t.team === 1 && attacker === player && !t.mareado){
     // queda MAREADO: listo para el remate
-    t.mareado = true; t.state = 'hurt'; t.st = 0; t.x += dir*5; SFX.hit();
-  } else { t.state = 'hurt'; t.st = 0; t.x += dir*5; SFX.hit(); }
+    t.mareado = true; t.state = 'hurt'; t.st = 0; t.x += dir*5; t.atacando = false; t.lanzando = false; SFX.hit();
+  } else { t.state = 'hurt'; t.st = 0; t.x += dir*5; t.atacando = false; t.lanzando = false; SFX.hit(); }
 
   // el jefe cambia de fase a la mitad
   if((t.esJefe || t.rigKey === 'boss') && t.team === 1 && !t.phase2 && t.hp > 0 && t.hp <= t.maxhp*0.5){
@@ -1436,13 +1596,20 @@ function aparecerSufri(){
     fase:'entra', meta: cam.x + 160 + Math.random()*(W - 320), espera:0, dejó:false
   };
   SFX.sufriLlega();
-  popups.push({ x:sufri.x, y:sufri.y - 130, txt:'¡LLEGÓ SUFRILINA!', t:0, col:'#7ad66a', size:18, vx:0, vy:-0.05 });
+  // ENTRADA ÉPICA
+  flashScreen = 120; slowmo = Math.max(slowmo, 260); zoomTarget = 1.08;
+  burst(sufri.x, sufri.y - 40, 24, '#7ad66a', 3.2);
+  impacts.push({ x:W/2, y:130, txt:'✦ SUFRILINA ✦', t:0, big:true });
+  popups.push({ x:sufri.x, y:sufri.y - 130, txt:'la repartidora sagrada', t:0, col:'#cfd4ff', size:13, vx:0, vy:-0.04 });
+  vibrar(90);
 }
 
 function updateSufri(dt){
   if(!sufri){
-    if(sufriCD > 0) sufriCD -= dt;
-    else if(enemies.length && Math.random() < 0.02){ aparecerSufri(); sufriCD = 26000; }
+    if(sufriUsada) return;                    // ya apareció esta ronda
+    if(sufriCD > 0){ sufriCD -= dt; return; }
+    // aparece una vez, cuando hay pelea en curso
+    if(enemies.length >= 2 && Math.random() < 0.04){ aparecerSufri(); sufriUsada = true; }
     return;
   }
   const s2 = sufri;
@@ -1456,8 +1623,20 @@ function updateSufri(dt){
     if(!s2.dejó && s2.espera < 380){
       s2.dejó = true;
       items.push({ x:s2.x, y:s2.y, t:0, kind:'quesillo' });
-      burst(s2.x, s2.y - 30, 14, '#e8a03c', 2.2);
-      popups.push({ x:s2.x, y:s2.y - 120, txt:'te dejo un quesillito', t:0, col:'#cfd4ff', size:13, vx:0, vy:-0.05 });
+      // ✦ MOMENTO ÉPICO ✦ — cámara lenta, zoom y lluvia de destellos
+      hitstop = 120; slowmo = Math.max(slowmo, 520); zoomTarget = 1.18;
+      flashScreen = 160; shake = Math.max(shake, 120);
+      burst(s2.x, s2.y - 30, 30, '#e8a03c', 3.6);
+      burst(s2.x, s2.y - 30, 18, '#7ad66a', 2.6);
+      // confetti dorado-verde cayendo
+      for(let i = 0; i < 24; i++)
+        confetti.push({ x:s2.x + (Math.random()-0.5)*60, y:s2.y - 80,
+                        vx:(Math.random()-0.5)*5, vy:-Math.random()*4-1,
+                        col:['#e8a03c','#7ad66a','#dff1ff'][i%3], t:0 });
+      const frases = ['¡QUESILLO SAGRADO!', 'un regalo de los dioses', '¡BENDICIÓN CANNÁBICA!', 'que la fuerza te acompañe'];
+      impacts.push({ x:W/2, y:H/2 - 30, txt:frases[(Math.random()*frases.length)|0], t:0, big:true });
+      vibrar(160);
+      SFX.perfect ? SFX.perfect() : SFX.special();
     }
     if(s2.espera <= 0){ s2.fase = 'sale'; s2.face *= -1; }
   } else {
@@ -1670,7 +1849,7 @@ function updatePlayer(dt){
 
   if(p.state === 'hurt'){ if(p.st > 300){ p.state = 'idle'; p.st = 0; } return; }
   if(p.state === 'down'){ if(p.landed && p.st > 800){ p.state = 'getup'; p.st = 0; } return; }
-  if(p.state === 'getup'){ if(p.st > 480){ p.state = 'idle'; p.st = 0; } return; }
+  if(p.state === 'getup'){ if(p.st > 480){ p.state = 'idle'; p.st = 0; p.iframes = Math.max(p.iframes, 700); } return; }   // invulnerable al levantarse
   if(p.state === 'ko'){
     if(p.landed){ p.koT += dt; if(p.koT > 1500 && mode === 'play') endRun('over'); }
     return;
@@ -1731,6 +1910,11 @@ function updatePlayer(dt){
     if(p.st > GOLF_DUR){ p.state = 'idle'; p.st = 0; }
     return;
   }
+  // ¿estás cerca de la tragamonedas lista? → tirar la palanca en vez de pegar
+  if(pressed.punch && ruleta && ruleta.fase === 'lista' && Math.abs(p.x - ruleta.x) < 90){
+    activarRuleta();
+    return;
+  }
   if(pressed.punch && p.state !== 'block' && p.state !== 'dash'){
     // ¿hay un enemigo MAREADO al alcance? → REMATE cinematográfico
     if(p.z === 0){
@@ -1767,7 +1951,7 @@ function updatePlayer(dt){
 
   p.x = Math.max(cam.x + 26, Math.min(p.x, Math.min(cam.x + W - 26, WORLD - 26)));
   // firewall: no pasar más allá de la barrera mientras Austincito compila en su PC
-  if(finBat && finBat.barrera && finBat.fase !== 'pelea' && finBat.fase !== 'fin'){
+  if(finBat && finBat.barrera && !finBat.firewallCaido && finBat.fase !== 'pelea' && finBat.fase !== 'fin'){
     if(p.x > finBat.barrera - 20) p.x = finBat.barrera - 20;
   }
   p.y = Math.max(GROUND_TOP, Math.min(p.y, GROUND_BOT));
@@ -1832,6 +2016,21 @@ function updatePlayer(dt){
 function updateEnemy(e, dt){
   e.st += dt;
   if(e.flash > 0) e.flash -= dt;
+  if(e.materializando > 0) e.materializando -= dt;
+  // ---- MODO TIRADOR: Faw detrás del firewall, quieto, solo lanza bolas (va PRIMERO) ----
+  if(e.tirador){
+    e.walkT += dt * 0.3;
+    e.face = -1;
+    if(e.throwCD > 0) e.throwCD -= dt;
+    if(e.gestoT > 0){ e.gestoT -= dt; e.state = 'golf'; } else { e.state = 'idle'; }
+    if(e.throwCD <= 0){
+      const bolsa = ['bolaGolf','bolaGolf','bolaHielo','bolaFuego','bolaCurva'];
+      lanzar(e, bolsa[(Math.random()*bolsa.length)|0], -1);
+      e.throwCD = (e.throwBase || 2000) + Math.random()*400;
+      e.gestoT = 300;
+    }
+    return;
+  }
   // el DORADO huye si no lo matás a tiempo
   if(e.dorado && e.huyeT !== undefined && e.state !== 'ko' && e.state !== 'down'){
     e.huyeT -= dt;
@@ -1861,7 +2060,7 @@ function updateEnemy(e, dt){
   if(e.state === 'ko'){ if(e.landed){ e.koT += dt; if(e.koT > 1300) e.dead = true; } return; }
   if(e.state === 'punch'){
     if(e.st > 90 && e.st < 180 && !e.hitDone){ e.hitDone = true; if(tryHit(e, 54, e.dmg, e.rigKey === 'boss', false)) SFX.hurt(); }
-    if(e.st > 300){ e.state = 'idle'; e.st = 0; }
+    if(e.st > 300){ e.state = 'idle'; e.st = 0; e.atacando = false; e.lanzando = false; }   // libera los tickets
     return;
   }
   if(e.state === 'golf'){
@@ -1873,7 +2072,7 @@ function updateEnemy(e, dt){
       SFX.kick();
       if(e.pala){ shake = Math.max(shake, 180); burst(e.x + e.face*40, e.y - 40, 10, '#e0e4ee', 2.8); }
     }
-    if(e.st > GOLF_DUR){ e.state = 'idle'; e.st = 0; }
+    if(e.st > GOLF_DUR){ e.state = 'idle'; e.st = 0; e.atacando = false; e.lanzando = false; }   // libera los tickets
     return;
   }
 
@@ -1881,7 +2080,13 @@ function updateEnemy(e, dt){
   if(e.jitT <= 0){ e.yJit = Math.random()*30 - 15; e.jitT = 1400 + Math.random()*1200; }
   const dx = player.x - e.x;
   e.face = dx >= 0 ? 1 : -1;
-  const tx = player.x - e.face*(e.arquero ? 250 : e.esJefe ? 56 : e.arma ? 230 : e.club ? 50 : 46)*e.big, ty = player.y + e.yJit;
+
+  // distancia base a la que se coloca cada enemigo
+  let distObj = (e.arquero ? 250 : e.esJefe ? 56 : e.arma ? 230 : e.club ? 50 : 46)*e.big;
+  // SISTEMA DE TICKETS: si no está atacando y ya hay 2 atacantes, ronda MÁS LEJOS esperando turno
+  const sinTicket = !e.esJefe && !e.atacando && atacantesActivos >= MAX_ATACANTES;
+  if(sinTicket) distObj = Math.max(distObj, 130 + (e.yJit + 14) * 3);   // se queda a media distancia, en abanico
+  const tx = player.x - e.face*distObj, ty = player.y + e.yJit;
   let mx = tx - e.x, my = ty - e.y;
   const m = Math.hypot(mx, my);
   const hittable = ['down','getup','ko','spin'].indexOf(player.state) < 0;
@@ -1902,7 +2107,9 @@ function updateEnemy(e, dt){
     if(e.throwCD > 0) e.throwCD -= dt;
     const minD = e.arquero ? 170 : e.esJefe ? 120 : 150;
     const lejos = Math.abs(dx) > minD && Math.abs(dx) < 560;
-    if(lejos && Math.abs(player.y - e.y) < 34 && e.throwCD <= 0 && hittable){
+        const ticketLanzar = e.esJefe || e.lanzando || lanzadoresActivos < MAX_LANZADORES;
+    if(lejos && Math.abs(player.y - e.y) < 34 && e.throwCD <= 0 && hittable && ticketLanzar){
+      if(!e.esJefe){ e.lanzando = true; lanzadoresActivos++; }   // toma el ticket de lanzador
       if(e.arquero && e.hp < e.maxhp*0.3){
         // TRIPLE DRIVE: abanico de tres, la desesperación del golfista
         lanzar(e, 'bolaGolf', e.face); projs[projs.length-1].vz += 0.9;
@@ -1920,9 +2127,13 @@ function updateEnemy(e, dt){
 
   const swing = !!e.club || !!e.pala;
   const range = swing ? (e.pala ? 66 : 58)*e.big : 54*e.big;
-  if(Math.abs(dx) < range && Math.abs(player.y - e.y) < 18 && e.cool <= 0 && hittable && player.z < 40){
+  const enRango = Math.abs(dx) < range && Math.abs(player.y - e.y) < 18 && e.cool <= 0 && hittable && player.z < 40;
+  // SISTEMA DE TICKETS: solo MAX_ATACANTES pueden pegar a la vez (los jefes no cuentan al límite)
+  const tieneTicket = e.esJefe || e.atacando || atacantesActivos < MAX_ATACANTES;
+  if(enRango && tieneTicket){
     e.state = swing ? 'golf' : 'punch'; e.st = 0; e.hitDone = false;
-    // los JEFES dejan más espacio entre golpes: da tiempo a bloquear/esquivar/contraatacar
+    e.atacando = true;   // toma el ticket
+    if(!e.esJefe) atacantesActivos++;   // ocupa un cupo de inmediato
     const pausaJefe = e.esJefe ? 850 : 0;
     e.cool = (swing ? 1500 : 900) + pausaJefe + Math.random()*(e.esJefe ? 1300 : 1000);
     return;
@@ -1955,7 +2166,7 @@ function updateEnemy(e, dt){
   e.y = Math.max(GROUND_TOP, Math.min(e.y, GROUND_BOT));
   e.x = Math.max(cam.x - 90, Math.min(e.x, cam.x + W + 90));
   // firewall: los enemigos tampoco cruzan a la zona del PC mientras Austincito compila
-  if(finBat && finBat.barrera && finBat.fase !== 'pelea' && finBat.fase !== 'fin'){
+  if(finBat && finBat.barrera && !finBat.firewallCaido && !e.tirador && finBat.fase !== 'pelea' && finBat.fase !== 'fin'){
     if(e.x > finBat.barrera - 10) e.x = finBat.barrera - 10;
   }
 }
@@ -1963,6 +2174,12 @@ function updateEnemy(e, dt){
 function update(dt){
   // freeze-frame: el mundo se detiene, pero el reloj de efectos sigue
   if(hitstop > 0){ hitstop -= dt; T += dt; if(comboPulse > 0) comboPulse -= dt/220; return; }
+  // presentación VS: el mundo se congela mientras se muestra el cartel (entra/muestra)
+  if(vsIntro && vsIntro.fase !== 'sale'){
+    T += dt; updateVS(dt);
+    if(shake > 0) shake -= dt; if(flashScreen > 0) flashScreen -= dt;
+    return;
+  }
   if(slowmo > 0){ slowmo -= dt; dt *= 0.35; }
 
   T += dt;
@@ -1983,6 +2200,7 @@ function update(dt){
   } }
   if(coinChainT > 0){ coinChainT -= dt; if(coinChainT <= 0) coinChain = 0; }
   if(ejecutandoT > 0) ejecutandoT -= dt;
+  updateVS(dt);
   updateRuleta(dt);
   if(comboPulse > 0) comboPulse -= dt/220;
   if(rankT > 0) rankT -= dt;
@@ -2014,6 +2232,13 @@ function update(dt){
   const dtMundo = trip > 0 ? dt * 0.34 : dt;
 
   updatePlayer(dt);
+  // sistema de tickets: contar atacantes de cerca y lanzadores
+  atacantesActivos = 0; lanzadoresActivos = 0;
+  for(const e of enemies){
+    if(e.dead || e.esJefe) continue;
+    if(e.state === 'punch' || e.state === 'golf' || e.atacando) atacantesActivos++;
+    if(e.lanzando) lanzadoresActivos++;
+  }
   for(let i = 0; i < enemies.length; i++) updateEnemy(enemies[i], dtMundo);
   updateProjs(dtMundo);
   updateDianas(dtMundo);
@@ -2048,6 +2273,7 @@ function updateStory(dt){
     if(activeZone.list.some(z => z[0] === 'b')){ bossAnnounce = 2000; bossAnnounceTxt = 'EL SENSEI'; }
     if(activeZone.list.some(z => z[0] === 'j')){
       const J = jefesListos()[jefeIdx % Math.max(1, jefesListos().length)];
+      lanzarVS(J.id);
       bossAnnounce = 2600; bossAnnounceTxt = J.nom;
       bossSub = J.grito;
     }
@@ -2091,47 +2317,201 @@ const RULETA_PREMIOS = [
   { txt:'+100¢',       col:'#ffd24a', act:()=>{ runCoins += 100; } },
   { txt:'nada…',       col:'#8f93b8', act:()=>{} },
 ];
+// La tragamonedas es una MÁQUINA FÍSICA en el mapa.
+// fase: 'aparece' → 'lista' (esperando que la actives) → 'girando' → 'premio' → 'yendo'
 function lanzarRuleta(){
-  ruleta = { t:0, spin:0, vel:26 + Math.random()*8, idx:0, done:false, holdT:2600 };
+  // aparece una MÁQUINA física en el mapa, a un costado del jugador
+  const lado = player.x < cam.x + W/2 ? 1 : -1;   // hacia el lado con más espacio
+  const mx = Math.max(cam.x + 90, Math.min(cam.x + W - 90, player.x + lado * 150));
+  ruleta = {
+    fase: 'aparece',        // aparece → espera → gira → premio → sale
+    x: mx, y: GROUND_TOP + 96,
+    t: 0, appT: 0,
+    reels: [0, 0, 0],       // posición de cada rodillo
+    reelV: [0, 0, 0],       // velocidad de cada rodillo
+    frenados: 0,
+    idx: 0, done: false, premioT: 0
+  };
   SFX.go();
 }
+
 function updateRuleta(dt){
   if(!ruleta) return;
-  ruleta.t += dt;
-  if(!ruleta.done){
-    ruleta.vel *= 0.965;                       // desacelera
-    ruleta.spin += ruleta.vel * dt/16;
-    ruleta.idx = Math.floor(ruleta.spin / 30) % RULETA_PREMIOS.length;
-    if(ruleta.vel < 0.5){
-      ruleta.done = true;
-      const premio = RULETA_PREMIOS[ruleta.idx];
-      premio.act();
-      flashScreen = 140; shake = Math.max(shake, 160); vibrar(120);
-      if(premio.txt !== 'nada…'){
-        impacts.push({ x:player.x, y:player.y - 100, txt:premio.txt + '!', t:0, big:true });
-        SFX.perfect ? SFX.perfect() : SFX.special();
+  const r = ruleta;
+  r.t += dt;
+
+  if(r.fase === 'aparece'){
+    r.appT += dt;
+    if(r.appT > 400) r.fase = 'espera';
+    return;
+  }
+
+  if(r.fase === 'espera'){
+    r.esperaT = (r.esperaT || 0) + dt;
+    if(r.esperaT > 12000){ r.fase = 'sale'; r.appT = 400; return; }   // no la usó: se va sola
+    // ¿el jugador está cerca y aprieta puño?
+    const cerca = Math.abs(player.x - r.x) < 70 && Math.abs(player.y - r.y) < 60;
+    if(cerca && (pressed.punch || pressed.special)){
+      r.fase = 'gira';
+      r.reelV = [22 + Math.random()*4, 24 + Math.random()*4, 26 + Math.random()*4];
+      r.stopAt = [700, 1200, 1750];   // cuándo frena cada rodillo (ms desde que arranca)
+      r.giraT = 0;
+      pressed.punch = false;          // consumir el input para no pegar
+      SFX.go();
+    }
+    return;
+  }
+
+  if(r.fase === 'gira'){
+    r.giraT += dt;
+    for(let i = 0; i < 3; i++){
+      if(r.reelV[i] > 0){
+        r.reels[i] += r.reelV[i] * dt/16;
+        // frenar este rodillo cuando llega su tiempo
+        if(r.giraT >= r.stopAt[i]){
+          r.reelV[i] *= 0.88;
+          if(r.reelV[i] < 0.6){
+            r.reelV[i] = 0;
+            // alinear al símbolo más cercano
+            r.reels[i] = Math.round(r.reels[i] / 30) * 30;
+            r.frenados++;
+            flashScreen = 60; shake = Math.max(shake, 80); SFX.coin ? SFX.coin(i+1) : SFX.pickup();
+            if(r.frenados === 3){
+              // resultado: el símbolo central de cada rodillo
+              const simbolos = r.reels.map(v => Math.floor(v / 30) % RULETA_PREMIOS.length);
+              // ¿tres iguales? jackpot del triple. Si no, vale el del primer rodillo
+              const triple = simbolos[0] === simbolos[1] && simbolos[1] === simbolos[2];
+              r.idx = simbolos[0];
+              r.triple = triple;
+              r.fase = 'premio'; r.premioT = 2400; r.done = true;
+              const premio = RULETA_PREMIOS[r.idx];
+              premio.act();
+              if(triple){ premio.act(); premio.act(); }   // triple = x3 el efecto
+              flashScreen = 200; shake = Math.max(shake, triple ? 320 : 160);
+              zoomTarget = triple ? 1.22 : 1.12; slowmo = Math.max(slowmo, triple ? 300 : 160);
+              vibrar(triple ? 250 : 140);
+              if(premio.txt !== 'nada…' || triple){
+                impacts.push({ x:W/2, y:H/2 - 20, txt:(triple ? '¡¡TRIPLE!! ' : '') + premio.txt + '!', t:0, big:true });
+                SFX.perfect ? SFX.perfect() : SFX.special();
+                if(triple) for(let k=0;k<30;k++) confetti.push({ x:r.x, y:r.y-60, vx:(Math.random()-0.5)*8, vy:-Math.random()*6-2, col:['#ffd24a','#7ad66a','#5ee7ff'][k%3], t:0 });
+              }
+            }
+          }
+        }
       }
     }
-  } else {
-    ruleta.holdT -= dt;
-    if(ruleta.holdT <= 0) ruleta = null;       // se cierra sola
+    return;
+  }
+
+  if(r.fase === 'premio'){
+    r.premioT -= dt;
+    if(r.premioT <= 0) r.fase = 'sale';
+    return;
+  }
+
+  if(r.fase === 'sale'){
+    r.appT -= dt;
+    if(r.appT <= 0) ruleta = null;
   }
 }
+
+const RULETA_SIMB = ['💰','🍕','❤','★','💎','✗'];   // uno por cada premio
+
 function drawRuleta(){
   if(!ruleta) return;
-  const cx = W/2, cy = 150, bw = 180, bh = 60;
-  g.fillStyle = 'rgba(8,7,16,0.85)'; g.fillRect(cx - bw/2, cy - bh/2, bw, bh);
-  g.strokeStyle = '#ffd24a'; g.lineWidth = 2.5; g.strokeRect(cx - bw/2, cy - bh/2, bw, bh);
-  textC('★ RECOMPENSA ★', cx, cy - 18, 12, '#ffd24a');
-  const premio = RULETA_PREMIOS[ruleta.idx];
-  const escala = ruleta.done ? 1.3 : 1;
-  textC(premio.txt, cx, cy + 12, 22 * escala, premio.col);
-  if(!ruleta.done){
-    // flechas de giro
-    g.fillStyle = '#ffd24a';
-    if(Math.floor(T/80)%2){ textC('▲', cx, cy - 30, 10, '#ffd24a'); textC('▼', cx, cy + 30, 10, '#ffd24a'); }
+  const r = ruleta;
+  const sx = r.x - cam.x;
+  // altura de aparición (sube desde el piso)
+  let sy = r.y;
+  if(r.fase === 'aparece') sy = r.y + (1 - r.appT/400) * 90;
+  else if(r.fase === 'sale') sy = r.y + (1 - r.appT/400) * 90;
+
+  // ---- CABINA DE LA MÁQUINA ----
+  const mw = 68, mh = 96;
+  g.save();
+  // sombra
+  g.fillStyle = 'rgba(0,0,0,0.3)';
+  g.beginPath(); g.ellipse(sx, r.y + 2, 40, 8, 0, 0, Math.PI*2); g.fill();
+  // cuerpo
+  g.fillStyle = '#7a2530'; g.fillRect(sx - mw/2, sy - mh, mw, mh);
+  g.fillStyle = '#5a1a24'; g.fillRect(sx - mw/2, sy - mh, mw, 6);
+  g.strokeStyle = '#ffd24a'; g.lineWidth = 2; g.strokeRect(sx - mw/2, sy - mh, mw, mh);
+  // marquesina superior con luces
+  g.fillStyle = '#ffd24a'; g.fillRect(sx - mw/2 - 3, sy - mh - 10, mw + 6, 12);
+  for(let i = 0; i < 7; i++){
+    g.fillStyle = (Math.floor(T/150) + i) % 2 ? '#fff' : '#c1272d';
+    g.beginPath(); g.arc(sx - mw/2 + 5 + i*10, sy - mh - 4, 2.2, 0, Math.PI*2); g.fill();
   }
+  textC('¡SUERTE!', sx, sy - mh - 1, 8, '#7a2530');
+
+  // ---- VENTANA DE LOS 3 RODILLOS ----
+  const vw = 52, vh = 34, vy = sy - mh + 16;
+  g.fillStyle = '#1a1420'; g.fillRect(sx - vw/2, vy, vw, vh);
+  g.strokeStyle = '#3a2a1a'; g.lineWidth = 1.5; g.strokeRect(sx - vw/2, vy, vw, vh);
+  // cada rodillo muestra su símbolo
+  for(let i = 0; i < 3; i++){
+    const rx = sx - vw/2 + 4 + i*16;
+    g.save();
+    g.beginPath(); g.rect(rx, vy + 2, 14, vh - 4); g.clip();
+    // el símbolo depende de la posición del rodillo
+    const base = Math.floor(r.reels[i] / 30);
+    for(let k = -1; k <= 1; k++){
+      const simIdx = ((base + k) % RULETA_SIMB.length + RULETA_SIMB.length) % RULETA_SIMB.length;
+      const offset = (r.reels[i] % 30) / 30 * 16;
+      g.font = '13px monospace'; g.textAlign = 'center';
+      g.fillStyle = '#fff';
+      g.fillText(RULETA_SIMB[simIdx], rx + 7, vy + vh/2 + 4 - k*16 + offset);
+    }
+    g.restore();
+  }
+  // línea central (ganadora)
+  g.strokeStyle = 'rgba(255,50,50,0.6)'; g.lineWidth = 1;
+  g.beginPath(); g.moveTo(sx - vw/2, vy + vh/2); g.lineTo(sx + vw/2, vy + vh/2); g.stroke();
+
+  // ---- PALANCA (se baja al girar) ----
+  const palX = sx + mw/2 + 4;
+  const palAng = r.fase === 'gira' && r.giraT < 300 ? 0.5 : 0;
+  g.strokeStyle = '#888'; g.lineWidth = 3;
+  g.beginPath(); g.moveTo(palX, sy - mh + 30);
+  g.lineTo(palX + Math.sin(palAng)*4, sy - mh + 30 - 20 + palAng*14); g.stroke();
+  g.fillStyle = '#c1272d';
+  g.beginPath(); g.arc(palX + Math.sin(palAng)*4, sy - mh + 30 - 20 + palAng*14, 4, 0, Math.PI*2); g.fill();
+
+  // ranura de monedas
+  g.fillStyle = '#2a1a10'; g.fillRect(sx - 8, sy - 30, 16, 3);
+  g.restore();
+
+  // ---- CARTEL DE "ACTIVAR" cuando estás cerca ----
+  if(r.fase === 'espera'){
+    const cerca = Math.abs(player.x - r.x) < 70 && Math.abs(player.y - r.y) < 60;
+    if(cerca){
+      if(Math.floor(T/300) % 2){
+        textC(isTouch ? '👊 tocá PUÑO para girar' : '👊 PUÑO para GIRAR', sx, sy - mh - 24, 12, '#ffd24a');
+      }
+    } else {
+      textC('¡vení a probar suerte!', sx, sy - mh - 24, 11, '#cfd4ff');
+    }
+  }
+
 }
+function drawRuletaOverlay(){
+  // el resultado en PANTALLA GRANDE (encima de todo)
+  if(!ruleta || ruleta.fase !== 'premio') return;
+  const r = ruleta;
+  const cx = W/2, cy = 130;
+  const bw = 300, bh = 80;
+  const pop = Math.min(1, (2400 - r.premioT) / 200);   // aparece con un pop
+  g.save();
+  g.translate(cx, cy); g.scale(0.8 + 0.2*pop, 0.8 + 0.2*pop); g.translate(-cx, -cy);
+  g.fillStyle = 'rgba(8,7,16,0.92)'; g.fillRect(cx - bw/2, cy - bh/2, bw, bh);
+  g.strokeStyle = r.triple ? '#ff5e3c' : '#ffd24a'; g.lineWidth = 3;
+  g.strokeRect(cx - bw/2, cy - bh/2, bw, bh);
+  const premio = RULETA_PREMIOS[r.idx];
+  textC(r.triple ? '★ ¡¡JACKPOT TRIPLE!! ★' : '★ RECOMPENSA ★', cx, cy - 20, r.triple ? 15 : 13, r.triple ? '#ff5e3c' : '#ffd24a');
+  textC(RULETA_SIMB[r.idx] + '  ' + premio.txt + '  ' + RULETA_SIMB[r.idx], cx, cy + 14, 24, premio.col);
+  g.restore();
+}
+
 function ejecutar(v, dir){
   // REMATE: freeze-frame dramático en silueta, luego el KO
   player.state = 'punch'; player.st = 0; player.hitDone = true;
@@ -2379,11 +2759,23 @@ function drawClub(sheet, R, rot){
 function drawApe(e){
   if(!SPR.ready) return;
   if(e.state === 'ko' && e.landed && e.koT > 200 && Math.floor(e.koT/110) % 2 === 0) return;
-  if(e === sufri && Math.floor(T/500) % 2 === 0){
-    // pequeño halo verde para que se note que es amiga
-    const gl = g.createRadialGradient(e.x - cam.x, e.y - 45, 6, e.x - cam.x, e.y - 45, 46);
-    gl.addColorStop(0, 'rgba(122,214,106,0.16)'); gl.addColorStop(1, 'rgba(122,214,106,0)');
-    g.fillStyle = gl; g.fillRect(e.x - cam.x - 50, e.y - 95, 100, 100);
+  if(e === sufri){
+    // aura sagrada pulsante (más épica)
+    const ex = e.x - cam.x, pulse = 0.5 + 0.35*Math.sin(T/120);
+    const rad = 56 + 8*Math.sin(T/200);
+    const gl = g.createRadialGradient(ex, e.y - 45, 6, ex, e.y - 45, rad);
+    gl.addColorStop(0, `rgba(122,214,106,${(0.26*pulse).toFixed(2)})`);
+    gl.addColorStop(0.5, `rgba(232,160,60,${(0.12*pulse).toFixed(2)})`);
+    gl.addColorStop(1, 'rgba(122,214,106,0)');
+    g.fillStyle = gl; g.fillRect(ex - rad, e.y - 45 - rad, rad*2, rad*2);
+    // destellos ✦ girando alrededor
+    for(let i = 0; i < 4; i++){
+      const a = T/300 + i*(Math.PI/2);
+      const dx = Math.cos(a)*32, dy = Math.sin(a)*20;
+      g.fillStyle = i % 2 ? '#e8ffa0' : '#dff1ff';
+      g.font = '11px monospace'; g.textAlign = 'center';
+      g.fillText('✦', ex + dx, e.y - 50 + dy);
+    }
   }
 
   const rigKey = e.rigKey || 'flo';
@@ -2478,6 +2870,15 @@ function drawApe(e){
   g.save();
   g.translate(sx, sy - e.z);
   g.scale(e.face * e.big, e.big);
+
+  // parpadeo de invulnerabilidad (solo el jugador, cuando tiene iframes y no está en dash)
+  if(e === player && e.iframes > 0 && e.state !== 'dash'){
+    g.globalAlpha = Math.floor(T/60) % 2 ? 0.35 : 0.85;
+  }
+  // efecto de materialización de Faw (aparece compilado por Austincito)
+  if(e.materializando > 0){
+    g.globalAlpha = 0.3 + 0.5*Math.sin(T/40)*Math.sin(T/40);
+  }
 
   if(P.rootRot){
     const lift = 18 * Math.abs(Math.sin(P.rootRot * D2R));
@@ -3526,6 +3927,7 @@ function render(){
   if(sufri) ents.push(sufri);
   ents.sort((a, b) => a.y - b.y);
   for(let i = 0; i < ents.length; i++) drawApe(ents[i]);
+  drawRuleta();   // la máquina tragamonedas física, en el mundo
   for(let i = 0; i < projs.length; i++) drawProj(projs[i]);
   if(finBat) drawMuros();
   for(let i = 0; i < debris.length; i++){
@@ -3603,7 +4005,7 @@ function render(){
     g.fillStyle = '#fff'; g.fillRect(0, 0, W, H);
     g.globalAlpha = 1;
   }
-  drawRuleta();
+  drawRuletaOverlay();
   // freeze-frame del REMATE: viñeta oscura enfocando la ejecución
   if(ejecutandoT > 0){
     const a = Math.min(0.6, ejecutandoT/320 * 0.6);
@@ -3635,7 +4037,7 @@ function render(){
     g.restore();
     g.globalAlpha = 1;
   }
-  if(bossAnnounce > 0){
+  if(bossAnnounce > 0 && !vsIntro){
     g.save();
     g.globalAlpha = Math.min(1, bossAnnounce/400);
     g.translate(W/2, H/2 - 40);
@@ -3646,6 +4048,7 @@ function render(){
     g.restore();
     g.globalAlpha = 1;
   }
+  drawVS();   // presentación épica de jefe (encima de todo)
   if(mode === 'over') drawOver();
   if(mode === 'win') drawWin();
   if(paused && mode === 'play'){
