@@ -13,11 +13,27 @@
     color:#ffd24a;border:1.5px solid #7a4048;border-radius:8px;padding:8px 12px;
     font-family:'Courier New',monospace;font-size:13px;cursor:pointer;display:none}
   #fsBtn:active{background:rgba(60,30,45,0.9)}
+  /* AVISO DE GIRAR: en vertical el juego queda a 390x219 (ilegible e injugable).
+     Solo aparece en pantallas táctiles y angostas, y tapa todo hasta que giran. */
+  #girar{position:fixed;inset:0;z-index:100;background:#08070f;display:none;
+    flex-direction:column;align-items:center;justify-content:center;text-align:center;
+    font-family:'Courier New',monospace;color:#ffd24a;padding:24px}
+  #girar .fono{font-size:64px;line-height:1;margin-bottom:18px;
+    animation:girito 1.8s ease-in-out infinite;transform-origin:center}
+  #girar h1{font-size:22px;margin:0 0 10px}
+  #girar p{font-size:13px;color:#8f93b8;margin:0;max-width:280px;line-height:1.5}
+  @keyframes girito{0%,40%{transform:rotate(0)}70%,100%{transform:rotate(-90deg)}}
+  @media (orientation:portrait){ body.tactil #girar{display:flex} }
 </style>
 </head>
 <body>
 <div id="wrap"><canvas id="cv" width="960" height="540"></canvas></div>
 <button id="fsBtn">⛶ Pantalla completa</button>
+<div id="girar">
+  <div class="fono">📱</div>
+  <h1>GIRÁ EL CELULAR</h1>
+  <p>TOMBOY REVENGE se juega en horizontal.<br>Poné el teléfono de costado para entrar al barrio.</p>
+</div>
 <script>
 'use strict';
 /* ============================================================
@@ -154,6 +170,9 @@ function pedirFullscreen(){
 function actualizarFsBtn(){
   // mostrar el botón solo en móvil y si no estamos ya en fullscreen
   const esMovil = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+  // marcamos el body: el aviso de "girá el celular" es solo para táctiles (no para una
+  // ventana angosta de escritorio, donde el CSS de orientación también daría vertical)
+  document.body.classList.toggle('tactil', esMovil);
   fsBtn.style.display = (esMovil && !enFS()) ? 'block' : 'none';
   setTimeout(fit, 100);
 }
@@ -1749,13 +1768,24 @@ function capturarTecla(code){
 }
 
 // posiciones de los botones táctiles (offset desde el borde, se puede reubicar)
+/* Versión del layout táctil. Si se sube, los layouts viejos guardados se migran
+   (ver cargarControles): así un arreglo de posiciones llega también a quien ya jugó. */
+const BTNPOS_VER = 2;
+/* PAD TÁCTIL: en celular el área de toque se agranda hacia el espacio vacío de alrededor,
+   sin cambiar el dibujo. 44 de canvas son solo ~32px físicos; con este pad llegan a ~45. */
+const TPAD = () => (isTouch ? 9 : 0);
+/* mete un botón en menuBoxes con el área de toque agrandada verticalmente */
+function pushBox(lista, i, x, y, w, h){
+  const p = TPAD();
+  lista.push({ i, x, y:y - p, w, h:h + p*2 });
+}
 const BTNPOS_DEFAULT = {
   a:  { x:-168, y:-66,  r:44 },   // PUÑO
   b:  { x:-64,  y:-118, r:44 },   // PATADA
   c:  { x:-262, y:-130, r:36 },   // SALTO
   bl: { x:-70,  y:-210, r:36 },   // BLOQUEO
   dv: { x:-150, y:-172, r:32 },   // DASH
-  s:  { x:-158, y:-178, r:32 },   // ESPECIAL
+  s:  { x:-222, y:-202, r:38 },   // ESPECIAL (v2: estaba a 10px del DASH y se lo comía; ahora tiene su hueco)
   t:  { x:-268, y:-42,  r:36 },   // TIRAR
   q:  { x:-352, y:-72,  r:34 },   // COMER
   hk: { x:-352, y:-150, r:34 },   // HACKEO ROBADO
@@ -2279,7 +2309,7 @@ function drawAustinPC(){
   g.restore();
 }
 function guardarControles(){
-  try{ localStorage.setItem('tomboyControles', JSON.stringify({ KEYMAP, BTNPOS })); }catch(e){}
+  try{ localStorage.setItem('tomboyControles', JSON.stringify({ KEYMAP, BTNPOS, v:BTNPOS_VER })); }catch(e){}
 }
 function cargarControles(){
   try{
@@ -2288,8 +2318,31 @@ function cargarControles(){
       const d = JSON.parse(raw);
       if(d.KEYMAP) for(const k in KEYMAP) if(d.KEYMAP[k]) KEYMAP[k] = d.KEYMAP[k];
       if(d.BTNPOS) for(const k in BTNPOS) if(d.BTNPOS[k]) BTNPOS[k] = d.BTNPOS[k];
+      // MIGRACIÓN: los layouts guardados antes de la v2 traían el ESPECIAL pisado por el DASH
+      // (10px de distancia → el toque siempre se lo comía el DASH y el especial era inusable).
+      // Se resetean SOLO los botones encimados; el resto de tu layout se respeta.
+      if((d.v || 1) < BTNPOS_VER) sanearBtnPos();
     }
   }catch(e){}
+}
+/* Si dos botones se superponen, el de arriba se vuelve inalcanzable.
+   Devolvemos a su lugar por defecto a los que estén encimados. */
+function sanearBtnPos(){
+  const ids = Object.keys(BTNPOS_DEFAULT);
+  let arreglados = 0;
+  for(let i = 0; i < ids.length; i++){
+    for(let j = i+1; j < ids.length; j++){
+      const A = BTNPOS[ids[i]], B = BTNPOS[ids[j]];
+      if(!A || !B) continue;
+      const d = Math.hypot(A.x - B.x, A.y - B.y);
+      if(d < A.r + B.r){
+        BTNPOS[ids[j]] = JSON.parse(JSON.stringify(BTNPOS_DEFAULT[ids[j]]));
+        arreglados++;
+      }
+    }
+  }
+  if(arreglados) guardarControles();
+  return arreglados;
 }
 function resetControles(){
   KEYMAP = JSON.parse(JSON.stringify(KEYMAP_DEFAULT));
@@ -3022,16 +3075,17 @@ function drawAyuda(){
   textC('el manual del barrio · todo lo que tenés que saber', W/2, 63, 11, '#8f93b8');
 
   // --- pestañas de página ---
+  const TAB_H = isTouch ? 44 : 26;   // en celular las pestañas son gordas (el dedo no es un mouse)
   const tabW = 150, gapT = 6;
   const totalT = AYUDA_PAGS.length * tabW + (AYUDA_PAGS.length-1)*gapT;
   let tx = W/2 - totalT/2;
   for(let i = 0; i < AYUDA_PAGS.length; i++){
     const on = ayudaPag === i;
     g.fillStyle = on ? 'rgba(255,210,74,0.25)' : 'rgba(20,18,36,0.8)';
-    g.fillRect(tx, 78, tabW, 26);
-    g.strokeStyle = on ? '#ffd24a' : '#4a4468'; g.lineWidth = 2; g.strokeRect(tx, 78, tabW, 26);
-    textC(AYUDA_PAGS[i], tx + tabW/2, 95, 11, on ? '#fff' : '#8f93b8');
-    menuBoxes.push({ i:'apag_'+i, x:tx, y:78, w:tabW, h:26 });
+    g.fillRect(tx, 74, tabW, TAB_H);
+    g.strokeStyle = on ? '#ffd24a' : '#4a4468'; g.lineWidth = 2; g.strokeRect(tx, 74, tabW, TAB_H);
+    textC(AYUDA_PAGS[i], tx + tabW/2, 74 + TAB_H/2 + 4, 11, on ? '#fff' : '#8f93b8');
+    pushBox(menuBoxes, 'apag_'+i, tx, 74, tabW, TAB_H);
     tx += tabW + gapT;
   }
 
@@ -3175,10 +3229,11 @@ function drawAyuda(){
   }
 
   // --- navegación ---
-  g.fillStyle = 'rgba(60,40,40,0.7)'; g.fillRect(W/2 - 60, H - 40, 120, 28);
-  g.strokeStyle = '#a06868'; g.lineWidth = 2; g.strokeRect(W/2 - 60, H - 40, 120, 28);
-  textC('VOLVER', W/2, H - 22, 13, '#ffb0b0');
-  menuBoxes.push({ i:'avolver', x:W/2 - 60, y:H - 40, w:120, h:28 });
+  const VB_H = isTouch ? 44 : 28, VB_W = isTouch ? 160 : 120;
+  g.fillStyle = 'rgba(60,40,40,0.7)'; g.fillRect(W/2 - VB_W/2, H - VB_H - 8, VB_W, VB_H);
+  g.strokeStyle = '#a06868'; g.lineWidth = 2; g.strokeRect(W/2 - VB_W/2, H - VB_H - 8, VB_W, VB_H);
+  textC('VOLVER', W/2, H - VB_H/2 - 4, 13, '#ffb0b0');
+  pushBox(menuBoxes, 'avolver', W/2 - VB_W/2, H - VB_H - 8, VB_W, VB_H);
   if(!isTouch) textC('← → cambiar de página · ESC volver', W/2, H - 50, 10, '#8f93b8');
 }
 // ============ FIN CÓMO SE JUEGA ============
@@ -3314,24 +3369,26 @@ function drawMonumento(){
   }
 
   // --- monedas y botones de donación ---
-  textC('tenés ¢' + coins, W/2, 494, 16, '#ffd24a');
+  const MON_BH = isTouch ? 44 : 26;          // botones gordos en celular
+  const MON_BY = 536 - MON_BH - 2;           // anclados abajo, sin salirse
+  textC('tenés ¢' + coins, W/2, MON_BY - 14, 16, '#ffd24a');
   const montoW = 100, gap = 12, nB = MON_DONACIONES.length;
   const totalW = nB * montoW + (nB-1)*gap;
   let mox = W/2 - totalW/2 - 60;
   for(let i = 0; i < nB; i++){
     const m = MON_DONACIONES[i], puede = coins >= m;
     g.fillStyle = puede ? 'rgba(255,210,74,0.2)' : 'rgba(40,30,30,0.6)';
-    g.fillRect(mox, 508, montoW, 26);
-    g.strokeStyle = puede ? '#ffd24a' : '#7a4048'; g.lineWidth = 2; g.strokeRect(mox, 508, montoW, 26);
-    textC('donar ¢' + m, mox + montoW/2, 522, 12, puede ? '#ffd24a' : '#7a4048');
-    menuBoxes.push({ i:1000 + i, x:mox, y:508, w:montoW, h:26 });
+    g.fillRect(mox, MON_BY, montoW, MON_BH);
+    g.strokeStyle = puede ? '#ffd24a' : '#7a4048'; g.lineWidth = 2; g.strokeRect(mox, MON_BY, montoW, MON_BH);
+    textC('donar ¢' + m, mox + montoW/2, MON_BY + MON_BH/2 + 4, 12, puede ? '#ffd24a' : '#7a4048');
+    pushBox(menuBoxes, 1000 + i, mox, MON_BY, montoW, MON_BH);
     mox += montoW + gap;
   }
   // botón volver
-  g.fillStyle = 'rgba(60,40,40,0.6)'; g.fillRect(W/2 + 250, 508, 90, 26);
-  g.strokeStyle = '#a06868'; g.lineWidth = 2; g.strokeRect(W/2 + 250, 508, 90, 26);
-  textC('VOLVER', W/2 + 295, 522, 12, '#ffb0b0');
-  menuBoxes.push({ i:1099, x:W/2 + 250, y:508, w:90, h:26 });
+  g.fillStyle = 'rgba(60,40,40,0.6)'; g.fillRect(W/2 + 250, MON_BY, 90, MON_BH);
+  g.strokeStyle = '#a06868'; g.lineWidth = 2; g.strokeRect(W/2 + 250, MON_BY, 90, MON_BH);
+  textC('VOLVER', W/2 + 295, MON_BY + MON_BH/2 + 4, 12, '#ffb0b0');
+  pushBox(menuBoxes, 1099, W/2 + 250, MON_BY, 90, MON_BH);
 
   if(monAvisoT > 0){ monAvisoT -= 16; textC(monAviso, W/2, 100, 15, '#7ad66a'); }
 }
@@ -3544,12 +3601,16 @@ function btnXY(id){
   return { x: W + p.x, y: H + p.y, r: p.r };   // offset negativo desde el borde
 }
 function buttons(){
-  const mostrar = ['a','b','c','bl','dv'];
-  if(ruleta && ruleta.fase === 'lista' && player && Math.abs(player.x - ruleta.x) < 90 && mode === 'play') mostrar.push('slot');
-  if(player && player.meter >= 100 && mode === 'play') mostrar.push('s');
-  if(player && player.arma && mode === 'play') mostrar.push('t');
-  if(quesillos > 0 && mode === 'play') mostrar.push('q');
-  if(SAVE.hackeoRobado && hackeoCarga >= 100 && hackeoActivo <= 0 && mode === 'play') mostrar.push('hk');
+  // OJO con el orden: hitButton devuelve el PRIMERO que coincide. Los botones condicionales
+  // (especial, tirar, comer, hackeo, slot) son raros e intencionales: van primero para que
+  // nunca se los coma un botón siempre-visible si llegan a quedar encimados.
+  const cond = [];
+  if(ruleta && ruleta.fase === 'lista' && player && Math.abs(player.x - ruleta.x) < 90 && mode === 'play') cond.push('slot');
+  if(player && player.meter >= 100 && mode === 'play') cond.push('s');
+  if(player && player.arma && mode === 'play') cond.push('t');
+  if(quesillos > 0 && mode === 'play') cond.push('q');
+  if(SAVE.hackeoRobado && hackeoCarga >= 100 && hackeoActivo <= 0 && mode === 'play') cond.push('hk');
+  const mostrar = cond.concat(['a','b','c','bl','dv']);
   return mostrar.map(id => {
     const xy = btnXY(id), m = BTN_META[id];
     return { id, label:m.label, x:xy.x, y:xy.y, r:xy.r, col:m.col };
@@ -4373,7 +4434,8 @@ function updatePlayer(dt){
   }
 
   // ---- GOLPE CARGADO: mantener puño quieto lo carga; al soltar, atraviesa a todos ----
-  const puñoHold = keys.KeyJ || keys.KeyZ || touch.btn.a;
+  // lee el KEYMAP (antes tenía KeyJ/KeyZ hardcodeados: si remapeabas el puño, perdías el golpe cargado)
+  const puñoHold = KEYMAP.punch.some(k => keys[k]) || touch.btn.a;
   if(puñoHold && ['idle','walk'].indexOf(p.state) >= 0 && p.z === 0){
     cargaPunch += dt;
     if(cargaPunch > 1000 && Math.floor(T/60)%2){   // destello cuando está listo
@@ -6884,6 +6946,10 @@ function drawTitle(){
   g.fillStyle = 'rgba(5,4,12,0.62)'; g.fillRect(0, 0, W, H);
   menuBoxes = [];
   // logo: TOMBOY grande, REVENGE debajo en rojo, subtítulo en cinta
+  // en celular el logo se achica: ese espacio se lo damos a los botones (dedos > estética)
+  const logoK = isTouch ? 0.72 : 1;
+  g.save();
+  g.translate(W/2, 0); g.scale(logoK, logoK); g.translate(-W/2, 0);
   const late = 1 + Math.sin(T/520)*0.012;
   g.save(); g.translate(W/2, 78); g.scale(late, late);
   textC('TOMBOY', 0, 0, 64, '#ffd24a');
@@ -6897,22 +6963,28 @@ function drawTitle(){
   g.strokeStyle = '#8a713a'; g.lineWidth = 1.5;
   g.strokeRect(W/2 - 160, 130, 320, 22);
   textC('LA ÚLTIMA PELEA', W/2, 146, 15, '#cfd4ff');
+  g.restore();
   if(!SPR.ready || !BG.ready || !QUES.ready || !ICONS.ready || !PIZZA.ready){ textC('CARGANDO...', W/2, H/2, 22, '#8f93b8'); return; }
 
   const bw = 360, bx = W/2 - bw/2;
-  const filaH = 40, filaStep = 46, filaY0 = 148;   // compactado: ahora son 7 opciones
+  // en celular: filas más altas y el hitbox ocupa TODO el paso (sin huecos muertos entre botones).
+  // Llegan hasta abajo de todo: CONTROLES y PROBAR JEFES están en las esquinas, en otra columna.
+  const filaH    = isTouch ? 57  : 40;
+  const filaStep = isTouch ? 61  : 46;
+  const filaY0   = isTouch ? 110 : 148;
   for(let i = 0; i < MENU.length; i++){
     const y = filaY0 + i*filaStep;
     const bloqueado = (i === 1 && !SAVE.hordeUnlocked);
-    menuBoxes.push({ i:i, x:bx, y:y, w:bw, h:filaH });
+    menuBoxes.push({ i:i, x:bx, y:y - (filaStep-filaH)/2, w:bw, h:filaStep });
     const on = menuSel === i;
+    const cy = y + filaH/2;   // centro vertical de la fila (el alto cambia entre celu y escritorio)
     if(bloqueado){
       const parp = negado > 0 && Math.floor(T/90) % 2;
       g.fillStyle = parp ? 'rgba(150,30,30,0.9)' : 'rgba(14,12,26,0.85)';
       g.fillRect(bx, y, bw, filaH);
       g.strokeStyle = on ? '#7a4048' : '#3a3555'; g.lineWidth = 2; g.strokeRect(bx, y, bw, filaH);
-      textC('🔒 ' + MENU[i], bx + bw/2, y + 18, 16, '#6f6a86');
-      textC('terminá el MODO HISTORIA para desbloquearlo', bx + bw/2, y + 32, 10, on ? '#ff7a7a' : '#585472');
+      textC('🔒 ' + MENU[i], bx + bw/2, cy - 2, 16, '#6f6a86');
+      textC('terminá el MODO HISTORIA para desbloquearlo', bx + bw/2, cy + 12, 10, on ? '#ff7a7a' : '#585472');
     } else {
       g.fillStyle = on ? 'rgba(193,39,45,0.85)' : 'rgba(20,18,36,0.8)';
       g.fillRect(bx, y, bw, filaH);
@@ -6920,10 +6992,10 @@ function drawTitle(){
       const sub = i === 0 ? 'con FLORENTINO · 4 zonas y el jefe'
                 : i === 1 ? 'elegís luchador · oleadas infinitas'
                 : i === 5 ? 'controles y mecánicas explicadas' : '';
-      textC(MENU[i], bx + bw/2, y + (sub ? 20 : 26), 19, on ? '#fff' : '#ffd24a');
-      if(sub) textC(sub, bx + bw/2, y + 34, 10, on ? '#ffd7d7' : '#8f93b8');
+      textC(MENU[i], bx + bw/2, sub ? cy - 3 : cy + 6, 19, on ? '#fff' : '#ffd24a');
+      if(sub) textC(sub, bx + bw/2, cy + 11, 10, on ? '#ffd7d7' : '#8f93b8');
       if(i === 1 && SAVE.hordeUnlocked && Math.floor(T/500) % 2)
-        textC('✔', bx + bw - 22, y + 27, 18, '#5cc96c');
+        textC('✔', bx + bw - 22, cy + 6, 18, '#5cc96c');
     }
   }
   if(negado > 0) negado -= 16;
@@ -6934,16 +7006,16 @@ function drawTitle(){
   if(SAVE.hordeBest) textC('MEJOR HORDA: OLEADA ' + SAVE.hordeBest, W - 30, 58, 13, '#5cc96c', 'right');
   textC(isTouch ? 'tocá una opción' : '↑↓ elegir · ENTER confirmar', W/2, H - 24, 13, '#8f93b8');
   // botón de prueba: salto directo a la batalla final
-  const pbw = 150, pbh = 30, pbx = W - pbw - 16, pby = H - pbh - 14;
-  menuBoxes.push({ i:99, x:pbx, y:pby, w:pbw, h:pbh });   // i=99 → prueba
+  const pbw = isTouch ? 168 : 150, pbh = isTouch ? 44 : 30, pbx = W - pbw - 16, pby = H - pbh - 10;
+  pushBox(menuBoxes, 99, pbx, pby, pbw, pbh);   // i=99 → prueba
   const onP = menuSel === 99;
   g.fillStyle = onP ? 'rgba(120,30,40,0.9)' : 'rgba(30,16,24,0.8)';
   g.fillRect(pbx, pby, pbw, pbh);
   g.strokeStyle = '#a04050'; g.lineWidth = 1.5; g.strokeRect(pbx, pby, pbw, pbh);
   textC('⚔ PROBAR JEFES' + (isTouch ? '' : '  (P)'), pbx + pbw/2, pby + pbh/2 + 4, 12, '#ff9aa8');
   // botón CONTROLES (abajo a la izquierda)
-  const cbw = 150, cbh = 30, cbx = 16, cby = H - cbh - 14;
-  menuBoxes.push({ i:98, x:cbx, y:cby, w:cbw, h:cbh });   // i=98 → controles
+  const cbw = isTouch ? 168 : 150, cbh = isTouch ? 44 : 30, cbx = 16, cby = H - cbh - 10;
+  pushBox(menuBoxes, 98, cbx, cby, cbw, cbh);   // i=98 → controles
   const onC = menuSel === 98;
   g.fillStyle = onC ? 'rgba(40,60,120,0.9)' : 'rgba(20,24,40,0.8)';
   g.fillRect(cbx, cby, cbw, cbh);
@@ -7060,10 +7132,11 @@ function drawShop(){
   textC('permanentes · se guardan entre partidas', W/2, 76, 12, '#8f93b8');
   textC('¢ ' + coins, W/2, 100, 24, '#ffd24a');
   // botón para ir al VESTUARIO (los cosméticos viven acá, en la tienda)
-  g.fillStyle = 'rgba(255,94,200,0.22)'; g.fillRect(W - 190, 30, 168, 32);
-  g.strokeStyle = '#ff5ec8'; g.lineWidth = 2; g.strokeRect(W - 190, 30, 168, 32);
-  textC('👕 VESTUARIO', W - 106, 50, 15, '#ffd6f0');
-  menuBoxes.push({ i:1050, x:W - 190, y:30, w:168, h:32 });
+  const VS_H = isTouch ? 44 : 32;
+  g.fillStyle = 'rgba(255,94,200,0.22)'; g.fillRect(W - 190, 26, 168, VS_H);
+  g.strokeStyle = '#ff5ec8'; g.lineWidth = 2; g.strokeRect(W - 190, 26, 168, VS_H);
+  textC('👕 VESTUARIO', W - 106, 26 + VS_H/2 + 5, 15, '#ffd6f0');
+  pushBox(menuBoxes, 1050, W - 190, 26, 168, VS_H);
   // BANNER DE LA QUINIELA DEL BARRIO
   const qy = 118, qbw = 600, qbx = W/2 - qbw/2;
   const yaAposte = quinielaHoy();
