@@ -258,7 +258,7 @@ const SPR = { ready:false, v:{ flo:{}, boss:{}, chiki:{}, sufri:{}, pop:{}, faw:
       if(kind === 'white'){ p[i] = p[i+1] = p[i+2] = 255; continue; }
       if(kind === 'tintG'){ p[i] = r*0.70|0; p[i+1] = Math.min(255, gr*1.02)|0; p[i+2] = b*0.66|0; continue; }
       if(kind === 'tintB'){ p[i] = r*0.68|0; p[i+1] = gr*0.84|0; p[i+2] = Math.min(255, b*1.30)|0; continue; }
-      // recoloreo de la camiseta roja (sólo Florentino)
+      // recoloreo de la camiseta roja (sólo Floretrino)
       const mx = Math.max(r, gr, b), mn = Math.min(r, gr, b), dl = mx - mn;
       if(mx < 78 || dl / mx < 0.45) continue;
       let h;
@@ -756,6 +756,9 @@ const SFX = {
 
 /* ---------------- ESTADO ---------------- */
 let mode = 'title', paused = false, last = 0, T = 0;
+/* MENÚ DE PAUSA: 0 = seguir, 1 = abandonar. pausaConfirm pide confirmación
+   antes de tirar la partida (es destructivo, no se deshace). */
+let pausaSel = 0, pausaConfirm = false, pausaBoxes = [];
 let tablaModo = 'story';   // pestaña activa del ranking
 let ctrlSel = 0, ctrlDrag = null;   // config de controles
 let cam = { x:0 }, shake = 0, score = 0;
@@ -1065,15 +1068,15 @@ let combo = 0, comboT = 0, comboBest = 0, comboPulse = 0;
 let flashScreen = 0;
 let bossAnnounce = 0, bossAnnounceTxt = '', bossSub = '';
 let vsIntro = null;   // presentación épica de jefe (pantalla VS + entrada)
-let dialogo = null;   // conversación en medio de la pelea (Florentino vs Vigor)
+let dialogo = null;   // conversación en medio de la pelea (Floretrino vs Vigor)
 let dialogoAvanzar = false;   // se activa al apretar cualquier tecla/toque durante el diálogo
-// el guion del pique entre Florentino y Vigor Guerrero (a mitad de vida)
+// el guion del pique entre Floretrino y Vigor Guerrero (a mitad de vida)
 const DIALOGO_VIGOR = [
-  { quien:'flo',   nombre:'FLORENTINO', txt:'jajajaja nesecitas una lipo para ganarme' },
+  { quien:'flo',   nombre:'FLORETRINO', txt:'jajajaja nesecitas una lipo para ganarme' },
   { quien:'vigor', nombre:'VIGOR GUERRERO', txt:"Se escribe 'necesitas'. Cómprese un Tucusito para que aprenda a hablar." },
-  { quien:'flo',   nombre:'FLORENTINO', txt:'la granputa de su madre' },
+  { quien:'flo',   nombre:'FLORETRINO', txt:'la granputa de su madre' },
   { quien:'vigor', nombre:'VIGOR GUERRERO', txt:'lo gordo es momentáneo, lo bruto es eterno' },
-  { quien:'flo',   nombre:'FLORENTINO', txt:'maldito gordo ese' }
+  { quien:'flo',   nombre:'FLORETRINO', txt:'maldito gordo ese' }
 ];
 function lanzarDialogo(lineas, alTerminar){
   dialogo = { lineas, i:0, t:0, dur:2600, alTerminar: alTerminar || null, cerrando:0 };
@@ -1370,7 +1373,7 @@ function congelar(o, ms){
   popups.push({ x:o.x, y:o.y - 104, txt:'¡CONGELADO!', t:0, col:'#8fd8ff', size:14, vx:0, vy:-0.08 });
   burst(o.x, o.y - 50, 10, '#bfeaff', 2.4);
 }
-// EL HACKEO ROBADO: Florentino corrompe el barrio como hacía Austincito
+// EL HACKEO ROBADO: Floretrino corrompe el barrio como hacía Austincito
 function lanzarHackeo(){
   if(!SAVE.hackeoRobado || hackeoCarga < 100 || hackeoActivo > 0) return;
   hackeoCarga = 0;
@@ -1393,7 +1396,7 @@ function lanzarHackeo(){
     burst(o.x, o.y - 50, 12, '#00ff66', 3.2);
   }
   impacts.push({ x:player.x, y:player.y - 120, txt:'¡HACKEADO!', t:0, big:true });
-  popups.push({ x:player.x, y:player.y - 150, txt:'>florentino.exe corrompiendo…', t:0, col:'#00ff66', size:13, vx:0, vy:-0.04 });
+  popups.push({ x:player.x, y:player.y - 150, txt:'>floretrino.exe corrompiendo…', t:0, col:'#00ff66', size:13, vx:0, vy:-0.04 });
 }
 // congelar sin el cartel de hielo (para el hackeo, que tiene su propio look)
 function congelarSilencio(o, ms){ o.frozenT = Math.max(o.frozenT || 0, ms); }
@@ -1847,7 +1850,10 @@ const BTNPOS_DEFAULT = {
   t:  { x:-268, y:-42,  r:36 },   // TIRAR
   q:  { x:-352, y:-72,  r:34 },   // COMER
   hk: { x:-352, y:-150, r:34 },   // HACKEO ROBADO
-  slot:{ x:-480, y:-90, r:46 }    // TRAGAMONEDAS (grande y centrado)
+  slot:{ x:-480, y:-90, r:46 },   // TRAGAMONEDAS (grande y centrado)
+  // PAUSA: arriba al centro. Sin esto, en celular no había forma de pausar (era solo ESC).
+  // Va en el hueco del HUD: la caja P1 llega a x=324 y los PUNTOS arrancan cerca del borde derecho.
+  pau: { x:-480, y:-508, r:26 }
 };
 let BTNPOS = JSON.parse(JSON.stringify(BTNPOS_DEFAULT));
 
@@ -1864,7 +1870,7 @@ function nombreTecla(code){
 }
 
 const CHARS = [
-  { key:'flo',   nom:'FLORENTINO', skin:'base', big:1.00, hp:120, vel:3.3, dmg:1.00, alcance:1.00,
+  { key:'flo',   nom:'FLORETRINO', skin:'base', big:1.00, hp:120, vel:3.3, dmg:1.00, alcance:1.00,
     lema:'EQUILIBRADO', desc:'El clásico. Combo de 3 y especial demoledor.' },
   { key:'chiki', nom:'CHIKI',      skin:'base', big:1.05, hp:95,  vel:3.9, dmg:0.85, alcance:1.06,
     lema:'RÁPIDO · PALO',   desc:'Chiquito y veloz. Su especial es el palazo giratorio.' },
@@ -1887,7 +1893,7 @@ function makeApe(o){
   }, o);
 }
 function reset(){
-  if(gameMode === 'story') charSel = 0;   // la historia se juega con Florentino
+  if(gameMode === 'story') charSel = 0;   // la historia se juega con Floretrino
   cam.x = 0; shake = 0; score = 0; winT = 0;
   enemies = []; items = []; sparks = []; popups = []; confetti = [];
   armaCompara = null; armaComparaAnim = 0;   // que no sobreviva un panel de la corrida anterior
@@ -2105,7 +2111,7 @@ function updateFinal(dt){
       F.fase = 'fin'; winT = 1; SFX.win();
       flashScreen = 140; shake = Math.max(shake, 300);
       popups.push({ x:a.x, y:a.y - 120, txt:'STACK OVERFLOW', t:0, col:'#5ee7ff', size:16, vx:0, vy:-0.05 });
-      // EL HACKEO ROBADO: Florentino le arranca el poder del glitch a Austincito
+      // EL HACKEO ROBADO: Floretrino le arranca el poder del glitch a Austincito
       if(!SAVE.hackeoRobado){
         SAVE.hackeoRobado = true;
         try{ saveGame(); }catch(e){}
@@ -2693,7 +2699,7 @@ function fantasmaPos(){
   return { x: a.x + (b.x - a.x) * frac, y: a.y + (b.y - a.y) * frac, jefe: a.i, fin: false };
 }
 
-// overlay del HACKEO ROBADO: código verde + franjas + consola de Florentino
+// overlay del HACKEO ROBADO: código verde + franjas + consola de Floretrino
 function drawHackeoFX(){
   const activo = hackeoActivo > 0;
   const flash = hackeoFlash > 0;
@@ -2718,7 +2724,7 @@ function drawHackeoFX(){
     } catch(err){}
     g.globalAlpha = Math.min(1, fuerza*1.3);
     g.fillStyle = 'rgba(2,10,4,0.85)';
-    const msg = '>florentino.exe — hackeando el barrio…';
+    const msg = '>floretrino.exe — hackeando el barrio…';
     g.font = '900 15px "Courier New", monospace';
     const tw = g.measureText(msg).width;
     g.fillRect(W/2 - tw/2 - 14, 92, tw + 28, 30);
@@ -2779,7 +2785,7 @@ function drawJefeMuerteFX(){
   }
   g.restore();
 }
-// dibuja el fantasma del récord: silueta espectral azul de Florentino con su nombre
+// dibuja el fantasma del récord: silueta espectral azul de Floretrino con su nombre
 function drawFantasma(){
   if(!fantasmaRec || !desafioDiario || bossRushFin) return;
   const p = fantasmaPos();
@@ -2804,7 +2810,7 @@ function drawFantasma(){
   const gl = g.createRadialGradient(sx, sy - 34 + bob, 4, sx, sy - 34 + bob, 40);
   gl.addColorStop(0, hexA(gglow, 0.5)); gl.addColorStop(1, hexA(gglow, 0));
   g.fillStyle = gl; g.fillRect(sx - 40, sy - 74 + bob, 80, 80);
-  // cuerpo espectral estilo Florentino
+  // cuerpo espectral estilo Floretrino
   g.globalAlpha = parp;
   g.fillStyle = gcol;
   // piernas (animadas al caminar)
@@ -2946,7 +2952,7 @@ const COSMETICOS = [
   { id:'bandana',  tipo:'hat',   nom:'BANDANA REBELDE', costo:600,  img:'bandana', desc:'vincha roja de guerrero urbano' },
   { id:'corona',   tipo:'hat',   nom:'CORONA DE GEMAS', costo:5000, img:'corona',  desc:'para el rey del callejón' },
   // --- colores de camisa (código) ---
-  { id:'sh_roja',  tipo:'shirt', nom:'CAMISA ROJA',     costo:0,    col:'#c1272d', desc:'la clásica de Florentino', gratis:true },
+  { id:'sh_roja',  tipo:'shirt', nom:'CAMISA ROJA',     costo:0,    col:'#c1272d', desc:'la clásica de Floretrino', gratis:true },
   { id:'sh_azul',  tipo:'shirt', nom:'CAMISA AZUL',     costo:300,  col:'#2d5fc1', desc:'frío como el hielo' },
   { id:'sh_verde', tipo:'shirt', nom:'CAMISA VERDE',    costo:300,  col:'#2d9c4a', desc:'verde barrio' },
   { id:'sh_negra', tipo:'shirt', nom:'CAMISA NEGRA',    costo:500,  col:'#22242e', desc:'elegancia oscura' },
@@ -3034,7 +3040,7 @@ function drawVestuario(){
   menuBoxes = [];
 
   textC('👕 VESTUARIO DEL BARRIO', W/2, 44, 28, '#ff9ad6');
-  textC('personalizá a Florentino · se ve en tu fantasma y tarjeta', W/2, 66, 12, '#8f93b8');
+  textC('personalizá a Floretrino · se ve en tu fantasma y tarjeta', W/2, 66, 12, '#8f93b8');
   textC('¢ ' + coins, W/2, 90, 20, '#ffd24a');
 
   // pestañas de categoría
@@ -3199,7 +3205,7 @@ function drawAyuda(){
     ], '#ff8a3c');
     y = bloque(y, '⭐', 'ESPECIAL', [
       'La barra azul se carga pegando y recibiendo. Al llegar a 100 parpadea.',
-      'Cada personaje tiene el suyo: Florentino demoledor, Chiki palazo giratorio.'
+      'Cada personaje tiene el suyo: Floretrino demoledor, Chiki palazo giratorio.'
     ], '#4aa8ff');
     y = bloque(y, '😵', 'REMATE', [
       'Si un enemigo queda MAREADO (ve estrellitas), pegale con el PUÑO al lado',
@@ -3263,7 +3269,7 @@ function drawAyuda(){
     // ===== PROGRESO =====
     let y = 122;
     y = bloque(y, '🕹', 'LOS MODOS', [
-      'MODO HISTORIA: con Florentino, 4 zonas del barrio y los jefes finales.',
+      'MODO HISTORIA: con Floretrino, 4 zonas del barrio y los jefes finales.',
       'MODO HORDA: se desbloquea al terminar la historia. Elegís luchador y',
       'aguantás oleadas infinitas. DESAFÍO DIARIO: una corrida distinta por día.'
     ], '#ffd24a');
@@ -3629,7 +3635,20 @@ addEventListener('keydown', e => {
         else if(mode === 'shop' || mode === 'tabla' || mode === 'select'){ mode = 'title'; menuSel = 0; }
       }
     }
-    if(e.code === 'Escape' && mode === 'play') paused = !paused;
+    // NAVEGACIÓN DEL MENÚ DE PAUSA (se lleva las teclas mientras está abierto)
+    if(paused && mode === 'play'){
+      if(e.code === 'ArrowUp' || e.code === 'KeyW' || e.code === 'ArrowDown' || e.code === 'KeyS'){
+        pausaSel = pausaSel === 0 ? 1 : 0;
+        SFX.pickup ? SFX.pickup() : SFX.go();
+        e.preventDefault();
+      }
+      if(e.code === 'Enter' || e.code === 'Space'){ pausaConfirmar(); e.preventDefault(); }
+    }
+    if(e.code === 'Escape' && mode === 'play'){
+      if(!paused){ paused = true; pausaSel = 0; pausaConfirm = false; }
+      else if(pausaConfirm){ pausaConfirm = false; pausaSel = 0; SFX.punch(); }  // salir de la confirmación
+      else paused = false;
+    }
   }
   keys[e.code] = true;
 });
@@ -3652,13 +3671,16 @@ const BTN_META = {
   t:  { label:'TIRAR',  col:'#8a4bd6' },
   q:  { label:'COMER',  col:'#3e7a34' },
   hk: { label:'🖥',     col:'#00c04a' },
-  slot:{ label:'🎰',    col:'#c9a44a' }
+  slot:{ label:'🎰',    col:'#c9a44a' },
+  pau: { label:'❚❚',    col:'#6a6a86' }
 };
 function btnXY(id){
   const p = BTNPOS[id] || BTNPOS_DEFAULT[id];
   return { x: W + p.x, y: H + p.y, r: p.r };   // offset negativo desde el borde
 }
 function buttons(){
+  // mientras el juego está en pausa manda el menú de pausa: ningún botón de acción responde
+  if(paused) return [];
   // OJO con el orden: hitButton devuelve el PRIMERO que coincide. Los botones condicionales
   // (especial, tirar, comer, hackeo, slot) son raros e intencionales: van primero para que
   // nunca se los coma un botón siempre-visible si llegan a quedar encimados.
@@ -3668,6 +3690,7 @@ function buttons(){
   if(player && player.arma && mode === 'play') cond.push('t');
   if(quesillos > 0 && mode === 'play') cond.push('q');
   if(SAVE.hackeoRobado && hackeoCarga >= 100 && hackeoActivo <= 0 && mode === 'play') cond.push('hk');
+  if(isTouch && mode === 'play') cond.push('pau');   // en celular no hay tecla ESC
   const mostrar = cond.concat(['a','b','c','bl','dv']);
   return mostrar.map(id => {
     const xy = btnXY(id), m = BTN_META[id];
@@ -3692,6 +3715,7 @@ function btnPress(id){
   if(id === 'dv') pressed.dash = true;
   if(id === 'hk'){ lanzarHackeo(); }
   if(id === 'slot'){ activarRuleta(); }
+  if(id === 'pau'){ paused = true; pausaSel = 0; pausaConfirm = false; SFX.go(); }
   // 'bl' (bloqueo) se maneja como mantenido: ver touchBlock
 }
 cv.addEventListener('pointerdown', e => {
@@ -3709,6 +3733,8 @@ cv.addEventListener('pointerdown', e => {
     return;
   }
   if(dialogo){ dialogoAvanzar = true; return; }   // cualquier toque avanza el diálogo
+  // el menú de pausa se lleva el toque: los botones de acción de abajo no responden
+  if(paused && mode === 'play'){ pausaTouch(p); return; }
   if(ruleta){
     if(ruleta.fase === 'lista'){ slotWantStart = true; return; }
     if(ruleta.fase === 'pov'){ slotWantStop = true; return; }
@@ -4199,7 +4225,7 @@ function hitEntity(t, dmg, dir, kd, attacker){
     t.phase2 = true; t.speed *= 1.45; t.dmg = Math.round(t.dmg*1.35); t.cool *= 0.55;
     flashScreen = 200; shake = 300; hitstop = 200;
     zoomTarget = 1.22; slowmo = 400;
-    // VIGOR GUERRERO: en vez del "SEGUNDO ROUND", suelta el pique con Florentino
+    // VIGOR GUERRERO: en vez del "SEGUNDO ROUND", suelta el pique con Floretrino
     if(t.rigKey === 'boss'){
       lanzarDialogo(DIALOGO_VIGOR);
     } else {
@@ -4421,6 +4447,91 @@ function dropLoot(e){
 function foesOf(e){ return e.team === 0 ? enemies : [player]; }
 
 let recienDesbloqueado = false;
+/* ===== MENÚ DE PAUSA ===== */
+const PAUSA_OPS = [
+  { txt:'▶  SEGUIR JUGANDO',      col:'#5cc96c' },
+  { txt:'✖  ABANDONAR PARTIDA',   col:'#ff5a5a' }
+];
+function drawPausa(){
+  pausaBoxes = [];
+  g.fillStyle = 'rgba(5,4,12,0.82)'; g.fillRect(0, 0, W, H);
+  const BW = 420, BX = W/2 - BW/2, BH = 64, GAP = 14;
+
+  if(!pausaConfirm){
+    textC('PAUSA', W/2, 150, 46, '#ffd24a');
+    textC(isTouch ? 'tocá una opción' : '↑↓ elegir · ENTER confirmar · ESC seguir', W/2, 178, 13, '#8f93b8');
+    let y = 230;
+    for(let i = 0; i < PAUSA_OPS.length; i++){
+      const on = pausaSel === i, o = PAUSA_OPS[i];
+      g.fillStyle = on ? 'rgba(193,39,45,0.85)' : 'rgba(20,18,36,0.92)';
+      g.fillRect(BX, y, BW, BH);
+      g.strokeStyle = on ? '#ffd24a' : '#4a4468'; g.lineWidth = on ? 3 : 2;
+      g.strokeRect(BX, y, BW, BH);
+      textC(o.txt, W/2, y + BH/2 + 7, 22, on ? '#fff' : o.col);
+      pausaBoxes.push({ i:i, x:BX, y:y, w:BW, h:BH });
+      y += BH + GAP;
+    }
+    // lo que te llevás igual: que se vea, así abandonar no da miedo de más
+    textC('las ¢' + runCoins + ' que juntaste se te guardan igual', W/2, y + 24, 14, '#ffd24a');
+    textC('la partida no entra en la tabla del grupo', W/2, y + 44, 12, '#8f93b8');
+  } else {
+    textC('¿SEGURO?', W/2, 190, 42, '#ff5a5a');
+    textC('perdés el progreso de esta corrida', W/2, 224, 16, '#cfd4ff');
+    textC('(te quedás con las ¢' + runCoins + ' que juntaste)', W/2, 248, 14, '#ffd24a');
+    const ops = [
+      { txt:'NO, SEGUIR JUGANDO', col:'#5cc96c' },
+      { txt:'SÍ, ABANDONAR',      col:'#ff5a5a' }
+    ];
+    let y = 290;
+    for(let i = 0; i < ops.length; i++){
+      const on = pausaSel === i;
+      g.fillStyle = on ? 'rgba(193,39,45,0.85)' : 'rgba(20,18,36,0.92)';
+      g.fillRect(BX, y, BW, BH);
+      g.strokeStyle = on ? '#ffd24a' : '#4a4468'; g.lineWidth = on ? 3 : 2;
+      g.strokeRect(BX, y, BW, BH);
+      textC(ops[i].txt, W/2, y + BH/2 + 7, 22, on ? '#fff' : ops[i].col);
+      pausaBoxes.push({ i:i, x:BX, y:y, w:BW, h:BH });
+      y += BH + GAP;
+    }
+  }
+}
+// confirmar la opción elegida en la pausa
+function pausaConfirmar(){
+  if(!pausaConfirm){
+    if(pausaSel === 0){ paused = false; SFX.go(); }              // seguir
+    else { pausaConfirm = true; pausaSel = 0; SFX.punch(); }     // pedir confirmación
+  } else {
+    if(pausaSel === 0){ pausaConfirm = false; pausaSel = 0; SFX.go(); }   // arrepentido
+    else abandonarPartida();
+  }
+}
+// tocar el menú de pausa (celular)
+function pausaTouch(p){
+  for(const b of pausaBoxes){
+    if(p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h){
+      if(pausaSel !== b.i){ pausaSel = b.i; SFX.pickup ? SFX.pickup() : SFX.go(); return; }
+      pausaConfirmar();   // segundo toque en la misma = confirmar
+      return;
+    }
+  }
+}
+
+/* ABANDONAR desde la pausa: NO pasa por endRun() a propósito.
+   endRun() sube el puntaje al ranking global, y una partida abandonada no
+   tiene por qué figurar en la tabla del grupo. Las monedas SÍ se guardan:
+   ya las peleaste, y morir también te las guarda (endRun hace coins += runCoins),
+   así que perderlas al abandonar sería incoherente. */
+function abandonarPartida(){
+  coins += runCoins;      // lo que juntaste es tuyo
+  runCoins = 0;
+  saveGame();
+  paused = false; pausaConfirm = false; pausaSel = 0;
+  mode = 'title'; menuSel = 0;
+  slowmo = 0; hitstop = 0; flashScreen = 0; shake = 0;
+  armaCompara = null;     // que no quede un panel abierto
+  SFX.go();
+  // el resto del estado (ICE, boss rush, zonas) lo limpia reset() al empezar la próxima
+}
 function endRun(how){
   mode = how;
   slowmo = 0; hitstop = 0;
@@ -6492,7 +6603,7 @@ function drawHUD(){
   g.strokeStyle = '#c9a44a'; g.strokeRect(18, 18, 58, 58);
   g.fillStyle = '#c1272d'; g.fillRect(86, 16, 30, 18);
   textC('P1', 101, 30, 14, '#fff');
-  textC('FLORENTINO', 124, 31, 17, '#ffd24a', 'left');
+  textC('FLORETRINO', 124, 31, 17, '#ffd24a', 'left');
   const hw = 190;
   g.fillStyle = '#3d0d10'; g.fillRect(86, 40, hw, 14);
   const frac = Math.max(0, player.hp / player.maxhp);
@@ -6771,7 +6882,7 @@ function generarTarjeta(){
   t.restore();
   txt(subLogro, TW/2, 284, 18, '#8f93b8');
 
-  // --- Florentino en pose épica (dibujado con formas) ---
+  // --- Floretrino en pose épica (dibujado con formas) ---
   const px = TW/2, py = 470;
   t.save();
   t.translate(px, py);
@@ -6978,7 +7089,7 @@ function menuItem(i, x, y, w, h, label, sub, col){
 let titleFighters = null;
 function drawTitle(){
   drawBG((T*0.03) % (WORLD - W));
-  // pelea de fondo: Florentino vs Chiki intercambiando golpes en bucle
+  // pelea de fondo: Floretrino vs Chiki intercambiando golpes en bucle
   try {
     if(!titleFighters && SPR.ready){
       titleFighters = {
@@ -7047,7 +7158,7 @@ function drawTitle(){
       g.fillStyle = on ? 'rgba(193,39,45,0.85)' : 'rgba(20,18,36,0.8)';
       g.fillRect(bx, y, bw, filaH);
       g.strokeStyle = on ? '#ffd24a' : '#4a4468'; g.lineWidth = 2; g.strokeRect(bx, y, bw, filaH);
-      const sub = i === 0 ? 'con FLORENTINO · 4 zonas y el jefe'
+      const sub = i === 0 ? 'con FLORETRINO · 4 zonas y el jefe'
                 : i === 1 ? 'elegís luchador · oleadas infinitas'
                 : i === 5 ? 'controles y mecánicas explicadas' : '';
       textC(MENU[i], bx + bw/2, sub ? cy - 3 : cy + 6, 19, on ? '#fff' : '#ffd24a');
@@ -8025,11 +8136,7 @@ function render(){
   drawArmaCompara();   // ¿con cuál arma te quedás? (el mundo está frenado)
   if(mode === 'over') drawOver();
   if(mode === 'win') drawWin();
-  if(paused && mode === 'play'){
-    g.fillStyle = 'rgba(5,4,12,0.6)'; g.fillRect(0, 0, W, H);
-    textC('PAUSA', W/2, H/2, 44, '#ffd24a');
-    textC('ESC para seguir', W/2, H/2 + 34, 15, '#8f93b8');
-  }
+  if(paused && mode === 'play') drawPausa();
   drawCRT();   // filtro retro opcional (tecla T)
 }
 
