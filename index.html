@@ -1850,7 +1850,10 @@ const BTNPOS_DEFAULT = {
   t:  { x:-268, y:-42,  r:36 },   // TIRAR
   q:  { x:-352, y:-72,  r:34 },   // COMER
   hk: { x:-352, y:-150, r:34 },   // HACKEO ROBADO
-  slot:{ x:-480, y:-90, r:46 },   // TRAGAMONEDAS (grande y centrado)
+  // TRAGAMONEDAS. Estaba en x=-480 (pantalla 480, r=46) y se metía 27px dentro de la zona
+  // del joystick (x<461): como hitButton se chequea antes que el stick, le robaba el toque
+  // y el personaje no caminaba mientras la slot estuviera en pantalla.
+  slot:{ x:-312, y:-232, r:46 },
   // PAUSA: arriba al centro. Sin esto, en celular no había forma de pausar (era solo ESC).
   // Va en el hueco del HUD: la caja P1 llega a x=324 y los PUNTOS arrancan cerca del borde derecho.
   pau: { x:-480, y:-508, r:26 }
@@ -3685,7 +3688,7 @@ function buttons(){
   // (especial, tirar, comer, hackeo, slot) son raros e intencionales: van primero para que
   // nunca se los coma un botón siempre-visible si llegan a quedar encimados.
   const cond = [];
-  if(ruleta && ruleta.fase === 'lista' && player && Math.abs(player.x - ruleta.x) < 90 && mode === 'play') cond.push('slot');
+  if(cercaDeRuleta() && mode === 'play') cond.push('slot');   // misma regla que activarRuleta()
   if(player && player.meter >= 100 && mode === 'play') cond.push('s');
   if(player && player.arma && mode === 'play') cond.push('t');
   if(quesillos > 0 && mode === 'play') cond.push('q');
@@ -3736,8 +3739,11 @@ cv.addEventListener('pointerdown', e => {
   // el menú de pausa se lleva el toque: los botones de acción de abajo no responden
   if(paused && mode === 'play'){ pausaTouch(p); return; }
   if(ruleta){
-    if(ruleta.fase === 'lista'){ slotWantStart = true; return; }
+    // 'pov' es un momento MODAL (overlay a pantalla completa): cualquier toque frena un rodillo.
     if(ruleta.fase === 'pov'){ slotWantStop = true; return; }
+    // 'lista': la máquina está parada en el barrio y vos seguís caminando. Acá NO nos comemos
+    // el toque: antes este return se tragaba TODO (incluido el joystick) mientras la slot
+    // existiera, y el personaje quedaba pegado. Para tirar la palanca está el botón 🎰.
   }
   if(mode === 'controles' && isTouch){
     // ¿tocó un botón para arrastrarlo?
@@ -4755,11 +4761,10 @@ function updatePlayer(dt){
     if(p.st > GOLF_DUR){ p.state = 'idle'; p.st = 0; }
     return;
   }
-  // ¿estás cerca de la tragamonedas lista? → tirar la palanca en vez de pegar
-  if(pressed.punch && ruleta && ruleta.fase === 'lista' && Math.abs(p.x - ruleta.x) < 90){
-    activarRuleta();
-    return;
-  }
+  // ¿estás cerca de la tragamonedas lista? → tirar la palanca en vez de pegar.
+  // activarRuleta() devuelve false si no estás lo bastante cerca: ahí el puño sigue siendo puño
+  // (antes esto hacía return igual y te comía el golpe sin activar nada).
+  if(pressed.punch && activarRuleta()) return;
   if(pressed.punch && p.state !== 'block' && p.state !== 'dash'){
     // ¿hay un enemigo MAREADO al alcance? → REMATE cinematográfico
     if(p.z === 0){
@@ -5495,6 +5500,25 @@ function lanzarRuleta(){
   SFX.go();
 }
 
+/* ¿Estás lo bastante cerca de la tragamonedas como para usarla?
+   Una sola fuente de verdad: antes updatePlayer usaba <90 (solo X) y updateRuleta <80 y <70,
+   y en ese hueco de 10px el juego llamaba a una función que no existía y se congelaba. */
+function cercaDeRuleta(){
+  return !!(ruleta && ruleta.fase === 'lista' && player &&
+            Math.abs(player.x - ruleta.x) < 80 && Math.abs(player.y - ruleta.y) < 70);
+}
+/* TIRAR DE LA PALANCA: pasa la máquina de 'lista' a 'pov' (rodillos girando).
+   Devuelve true si realmente la activó, para que quien la llame sepa si consumir el input. */
+function activarRuleta(){
+  if(!cercaDeRuleta()) return false;
+  ruleta.fase = 'pov'; ruleta.povT = 0;
+  ruleta.reelV = [26, 28, 30];              // los 3 rodillos girando rápido
+  ruleta.reelStop = [false, false, false];
+  slotWantStart = false;
+  pressed.punch = pressed.kick = pressed.special = pressed.jump = false;
+  SFX.go();
+  return true;
+}
 function updateRuleta(dt){
   if(!ruleta) return;
   const r = ruleta;
@@ -5510,16 +5534,8 @@ function updateRuleta(dt){
     r.esperaT = (r.esperaT || 0) + dt;
     if(r.esperaT > 14000){ r.fase = 'yendo'; r.appT = 400; return; }   // no la usó
     // ¿el jugador está cerca y aprieta CUALQUIER botón?
-    const cerca = Math.abs(player.x - r.x) < 80 && Math.abs(player.y - r.y) < 70;
     const apreta = pressed.punch || pressed.kick || pressed.special || pressed.jump || slotWantStart;
-    if(cerca && apreta){
-      r.fase = 'pov'; r.povT = 0;
-      r.reelV = [26, 28, 30];   // los 3 rodillos girando rápido
-      r.reelStop = [false, false, false];
-      slotWantStart = false;
-      pressed.punch = pressed.kick = pressed.special = pressed.jump = false;
-      SFX.go();
-    }
+    if(apreta) activarRuleta();   // ella misma chequea la cercanía y consume el input
     return;
   }
 
